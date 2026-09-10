@@ -123,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/state":
             self._send_json(_state())
         elif self.path.startswith("/api/shot/"):
-            ident = self.path[len("/api/shot/"):]
+            ident = self.path[len("/api/shot/"):].split("?", 1)[0]
             try:
                 data = controller.get_controller().screenshot(ident)
             except RuntimeError:
