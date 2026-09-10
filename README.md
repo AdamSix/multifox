@@ -2,17 +2,13 @@
 
 # multifox
 
-Run many isolated, fingerprint-spoofed browser sessions side by side. Each
-identity gets its own disposable Firefox profile and a unique
-[Camoufox](https://github.com/daijro/camoufox) fingerprint (OS, fonts, WebGL,
-screen, timezone, locale, …).
-
-Identities are disposable: **Stop** kills every window and deletes all
-profiles, so nothing (cookies, history, logins) survives between sessions.
+Run many isolated, fingerprint-spoofed browser sessions side by side.
 
 **How it works.** Press Start and multifox generates N personas (a realistic
-OS / hardware / locale mix from BrowserForge data), writes each one into its
-own profile directory, and launches N headed Camoufox windows under
+OS / hardware / locale mix from BrowserForge data), gives each one its own
+disposable Firefox profile and a unique
+[Camoufox](https://github.com/daijro/camoufox) fingerprint (OS, fonts, WebGL,
+screen, timezone, locale, …), and launches N headed Camoufox windows under
 [Playwright](https://playwright.dev) control. A local dashboard shows a live
 screenshot of every window; click a tile to bring that window to the front.
 Because the browsers are driven by Playwright, the same setup can later be
