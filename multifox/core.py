@@ -23,11 +23,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-from gen_personas import generate_personas, proxy_entries
+from .personas import generate_personas, proxy_entries
 
 # Runtime data (proxies.conf, profiles/) lives here. Defaults to the project
 # directory; the packaged app sets FFID_HOME to a per-user data dir.
-ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent)
+ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent.parent)
 SETTINGS = ROOT / "settings.json"
 
 
@@ -181,22 +181,61 @@ def camoufox_freshness(timeout=10):
 def log_camoufox_freshness(log=print):
     """Warn when the Camoufox browser or python package is behind the latest release."""
     info = camoufox_freshness()
+    frozen = getattr(sys, "frozen", False)
     if info["browser_latest"] and info["browser_installed"] and info["browser_installed"] != info["browser_latest"]:
+        hint = "it will update automatically now" if frozen else "run './ffid.sh update'"
         log(
             f"warning: Camoufox browser {info['browser_installed']} is behind latest "
-            f"{info['browser_latest']} — run './ffid.sh update'"
+            f"{info['browser_latest']} — {hint}"
         )
     if info["package_latest"] and info["package_installed"] and info["package_installed"] != info["package_latest"]:
+        hint = "download the latest multifox release" if frozen else "run './ffid.sh update'"
         log(
             f"warning: camoufox package {info['package_installed']} is behind latest "
-            f"{info['package_latest']} — run './ffid.sh update'"
+            f"{info['package_latest']} — {hint}"
         )
     return info
 
 
+def _update_browser_frozen(log):
+    """In-process browser update for the packaged app (see update_camoufox)."""
+    from camoufox.pkgman import (
+        CamoufoxFetcher,
+        CamoufoxNotInstalled,
+        installed_verstr,
+        list_available_versions,
+    )
+
+    try:
+        installed = installed_verstr()
+    except CamoufoxNotInstalled:
+        return  # first install is the launcher's job (_ensure_browser)
+    latest = next(iter(list_available_versions(include_prerelease=False)), None)
+    if latest is None:
+        log("warning: no supported camoufox browser release found — keeping installed version")
+        return
+    if installed == latest.version.full_string:
+        log(f"camoufox browser {installed} is up to date")
+        return
+    log(f"updating camoufox browser {installed} -> {latest.version.full_string}…")
+    CamoufoxFetcher(selected_version=latest).install(replace=True)
+    log(f"camoufox browser {installed_verstr()} installed")
+
+
 def update_camoufox(log=print):
-    """Upgrade the camoufox package and fetch the latest browser (official/stable channel)."""
+    """Bring camoufox up to date.
+
+    Source checkout: upgrade the pip package, then fetch the latest browser via
+    the camoufox CLI. Frozen (PyInstaller) app: the package is baked into the
+    bundle and pip isn't shipped, and re-executing sys.executable would just
+    relaunch the app — so only the browser is updated, in-process via
+    CamoufoxFetcher (which only offers releases the bundled package supports).
+    Package updates reach frozen users as new multifox releases.
+    """
     log_camoufox_freshness(log)
+    if getattr(sys, "frozen", False):
+        _update_browser_frozen(log)
+        return
     for cmd in (
         [sys.executable, "-m", "pip", "install", "--upgrade", "camoufox[geoip]"],
         [sys.executable, "-m", "camoufox", "set", "official/stable"],

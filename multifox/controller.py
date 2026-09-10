@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-import ffid_core
+from . import core as ffid_core
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget

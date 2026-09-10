@@ -9,7 +9,7 @@ timezone / locale / geolocation match the exit IP. The resulting CAMOU_CONFIG_*
 environment variables are written to profiles/idN/persona.env, which ffid.sh
 launch sources before starting the browser.
 
-Run with the project venv: .venv/bin/python gen_personas.py [count]
+Run with the project venv: PYTHONPATH=. .venv/bin/python -m multifox.personas [count]
 
 The identity count comes from ffid.sh (FFID_SESSIONS, default 10). Proxies are
 cycled modulo the entries in proxies.conf; the OS/screen presets cycle too,
@@ -25,7 +25,7 @@ from pathlib import Path
 
 # Runtime data (proxies.conf, profiles/) lives here. Defaults to the project
 # directory; the packaged app sets FFID_HOME to a per-user data dir.
-ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent)
+ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent.parent)
 CONF = ROOT / "proxies.conf"
 PROFILES = ROOT / "profiles"
 
@@ -53,7 +53,7 @@ def proxy_entries():
 def generate_personas(count, entries=None, progress=None):
     """Write one persona.env per profiles/idN dir; returns log lines.
 
-    entries overrides the proxy list (ffid_core passes ['DIRECT'] when the
+    entries overrides the proxy list (core passes ['DIRECT'] when the
     proxy toggle is off, which skips all through-the-proxy GeoIP lookups).
     """
     from browserforge.fingerprints import Screen

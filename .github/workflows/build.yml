@@ -32,7 +32,7 @@ jobs:
       - name: Fetch GeoIP database
         run: .venv/bin/python -c "from camoufox.geolocation import download_mmdb; download_mmdb()"
       - name: Build app
-        run: ./build_app.sh
+        run: ./packaging/build_app.sh
       - name: Rename artifact
         run: mv dist/multifox.zip "dist/${{ matrix.asset }}"
       - uses: actions/upload-artifact@v4
@@ -53,7 +53,7 @@ jobs:
       - name: Fetch GeoIP database
         run: .venv\Scripts\python.exe -c "from camoufox.geolocation import download_mmdb; download_mmdb()"
       - name: Build app
-        run: .\build_app.ps1
+        run: .\packaging\build_app.ps1
       - name: Rename artifact
         run: Move-Item dist\multifox.zip dist\multifox-windows-x86_64.zip
       - uses: actions/upload-artifact@v4

@@ -1,14 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for the multifox desktop app.
 
-Build with:  ./build_app.sh        (macOS, produces dist/multifox.app)
+Build with:  ./packaging/build_app.sh    (macOS, produces dist/multifox.app)
 Per-architecture builds: run on an arm64 Mac for Apple Silicon, an Intel Mac
 (or CI runner) for x86_64 — PyInstaller does not cross-compile.
 """
 
 from PyInstaller.utils.hooks import collect_all
 
-datas = [("static", "static"), ("proxies.conf", ".")]
+import os.path
+
+# repo root = parent of this spec file's packaging/ dir (SPECPATH is set by PyInstaller)
+_specdir = os.path.abspath(SPECPATH)
+if os.path.isfile(_specdir):
+    _specdir = os.path.dirname(_specdir)
+ROOT = os.path.dirname(_specdir)
+
+datas = [(os.path.join(ROOT, "multifox/static"), "multifox/static"), (os.path.join(ROOT, "proxies.conf"), ".")]
 binaries = []
 hiddenimports = []
 
@@ -16,10 +24,9 @@ hiddenimports = []
 # build_app.sh so the app installs offline with no first-run download.
 # (shipped as a zip so PyInstaller treats the browser's dylibs as opaque
 # data instead of trying to rewrite their rpaths)
-import os.path
-
-if os.path.isfile("build/bundle_payload.zip"):
-    datas.append(("build/bundle_payload.zip", "bundle_payload"))
+payload = os.path.join(ROOT, "build/bundle_payload.zip")
+if os.path.isfile(payload):
+    datas.append((payload, "bundle_payload"))
 
 # packages with data files / native drivers that static analysis misses
 for pkg in (
@@ -37,7 +44,7 @@ for pkg in (
     hiddenimports += h
 
 a = Analysis(
-    ["launcher.py"],
+    [os.path.join(ROOT, "launcher.py")],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -76,7 +83,7 @@ app = BUNDLE(
     icon=None,
     bundle_identifier="com.multifox.app",
     info_plist={
-        "CFBundleShortVersionString": "0.1.0",
+        "CFBundleShortVersionString": "0.2.0",
         "NSHighResolutionCapable": True,
     },
 )

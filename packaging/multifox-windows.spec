@@ -1,22 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for the multifox desktop app (Windows).
 
-Build with:  .\\build_app.ps1    (produces dist/multifox/multifox.exe)
+Build with:  .\packaging\build_app.ps1    (produces dist/multifox/multifox.exe)
 Separate from multifox.spec because BUNDLE (.app) is macOS-only.
 """
 
 from PyInstaller.utils.hooks import collect_all
 
-datas = [("static", "static"), ("proxies.conf", ".")]
+import os.path
+
+# repo root = parent of this spec file's packaging/ dir (SPECPATH is set by PyInstaller)
+_specdir = os.path.abspath(SPECPATH)
+if os.path.isfile(_specdir):
+    _specdir = os.path.dirname(_specdir)
+ROOT = os.path.dirname(_specdir)
+
+datas = [(os.path.join(ROOT, "multifox/static"), "multifox/static"), (os.path.join(ROOT, "proxies.conf"), ".")]
 binaries = []
 hiddenimports = []
 
 # bundled Camoufox browser + GeoIP DB + addons as a zip, staged by
 # build_app.ps1 so the app installs offline with no first-run download.
-import os.path
-
-if os.path.isfile("build/bundle_payload.zip"):
-    datas.append(("build/bundle_payload.zip", "bundle_payload"))
+payload = os.path.join(ROOT, "build/bundle_payload.zip")
+if os.path.isfile(payload):
+    datas.append((payload, "bundle_payload"))
 
 # packages with data files / native drivers that static analysis misses
 for pkg in (
@@ -34,7 +41,7 @@ for pkg in (
     hiddenimports += h
 
 a = Analysis(
-    ["launcher.py"],
+    [os.path.join(ROOT, "launcher.py")],
     pathex=[],
     binaries=binaries,
     datas=datas,

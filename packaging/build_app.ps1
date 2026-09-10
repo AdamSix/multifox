@@ -1,11 +1,11 @@
-# build_app.ps1 — build the multifox desktop app with PyInstaller (Windows)
+# packaging/build_app.ps1 — build the multifox desktop app with PyInstaller (Windows)
 #
-#   .\build_app.ps1        build dist\multifox\ (+ a zip next to it)
+#   .\packaging\build_app.ps1    build dist\multifox\ (+ a zip next to it)
 #
 # Mirrors build_app.sh. Run on Windows — PyInstaller does not cross-compile.
 $ErrorActionPreference = "Stop"
 
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Py = Join-Path $Root ".venv\Scripts\python.exe"
 
 if (-not (Test-Path $Py)) { Write-Error ".venv missing - run 'py install.py' first" }
@@ -33,7 +33,7 @@ Remove-Item $Stage -Recurse -Force
 Write-Host "staged browser payload zip into the bundle"
 
 Set-Location $Root
-& $Py -m PyInstaller --noconfirm --clean --distpath (Join-Path $Root "dist") --workpath (Join-Path $Root "build") (Join-Path $Root "multifox-windows.spec")
+& $Py -m PyInstaller --noconfirm --clean --distpath (Join-Path $Root "dist") --workpath (Join-Path $Root "build") (Join-Path $Root "packaging\multifox-windows.spec")
 if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed" }
 
 $AppDir = Join-Path $Root "dist\multifox"

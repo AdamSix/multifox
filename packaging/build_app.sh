@@ -1,13 +1,13 @@
 #!/bin/bash
-# build_app.sh — build the multifox desktop app with PyInstaller
+# packaging/build_app.sh — build the multifox desktop app with PyInstaller
 #
-#   ./build_app.sh           build dist/multifox.app (+ a zip next to it)
+#   ./packaging/build_app.sh    build dist/multifox.app (+ a zip next to it)
 #
 # Architecture: the build matches the machine you run it on. For Apple
 # Silicon build on an arm64 Mac, for Intel on an x86_64 Mac (or CI).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$ROOT/.venv/bin/python"
 
 [[ -x "$PY" ]] || { echo "error: .venv missing — run 'python3 install.py' first" >&2; exit 1; }
@@ -33,7 +33,7 @@ rm -rf "$STAGE"
 echo "staged $(du -sh "$PAYLOAD_ZIP" | cut -f1) browser payload zip into the bundle"
 
 cd "$ROOT"
-"$PY" -m PyInstaller --noconfirm --clean --distpath "$ROOT/dist" --workpath "$ROOT/build" "$ROOT/multifox.spec"
+"$PY" -m PyInstaller --noconfirm --clean --distpath "$ROOT/dist" --workpath "$ROOT/build" "$ROOT/packaging/multifox.spec"
 
 APP="$ROOT/dist/multifox.app"
 [[ -d "$APP" ]] || { echo "error: $APP was not produced" >&2; exit 1; }

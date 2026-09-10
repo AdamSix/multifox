@@ -124,7 +124,7 @@ cmd_create() {
   (( count > 0 )) || { echo "error: $CONF has no proxy entries" >&2; exit 1; }
   (( N > count )) && echo "warning: $count proxies for $N identities — egresses repeat (shared IPs link identities)" >&2
   # non-blocking freshness check — warns if camoufox is behind the latest release
-  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -c "import ffid_core; ffid_core.log_camoufox_freshness()" \
+  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -c "from multifox import core; core.log_camoufox_freshness()" \
     || echo "warning: camoufox update check failed (offline?)" >&2
   # clear any previous set so a smaller N doesn't leave stale profiles behind
   if [[ -d "$PROFILES_DIR" && "$PROFILES_DIR" == "$ROOT/profiles" ]]; then
@@ -140,7 +140,7 @@ cmd_create() {
     write_user_js "$dir" "$i"
   done
   # generate one Camoufox persona per identity (does GeoIP lookups through the proxies)
-  "$ROOT/.venv/bin/python" "$ROOT/gen_personas.py" "$N"
+  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -m multifox.personas "$N"
   echo
   echo "Done. Launch with: $0 launch"
 }
@@ -184,7 +184,7 @@ cmd_dashboard() {
 
 cmd_update() {
   [[ -x "$ROOT/.venv/bin/python" ]] || { echo "error: .venv missing — run '$0 setup' first" >&2; exit 1; }
-  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -c "import ffid_core; ffid_core.update_camoufox()"
+  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -c "from multifox import core; core.update_camoufox()"
 }
 
 cmd_stop() {
