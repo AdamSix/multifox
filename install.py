@@ -41,10 +41,7 @@ def main():
     print()
     print("install complete. Next steps:")
     print("  1. edit proxies.conf — one SOCKS5 host:port per line (see the comments in the file)")
-    if sys.platform == "win32":
-        print(f"  2. start the dashboard: {py} dashboard.py")
-    else:
-        print("  2. start the dashboard: ./ffid.sh dashboard")
+    print(f"  2. start the dashboard: {py} dashboard.py")
     print("  3. open http://multifox.localhost:8787")
 
 

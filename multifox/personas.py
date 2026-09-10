@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Generate one Camoufox persona per identity (called by ffid.sh create).
+Generate one Camoufox persona per identity (called by core.create_profiles).
 
 For each profiles/idN directory, asks the camoufox python package to build a
 full fingerprint config (BrowserForge-generated, matching real-world device
 distributions), doing a GeoIP lookup through that identity's SOCKS5 proxy so
 timezone / locale / geolocation match the exit IP. The resulting CAMOU_CONFIG_*
-environment variables are written to profiles/idN/persona.env, which ffid.sh
-launch sources before starting the browser.
+environment variables are written to profiles/idN/persona.env, which the
+controller loads before starting each identity's browser.
 
-Run with the project venv: PYTHONPATH=. .venv/bin/python -m multifox.personas [count]
+Run standalone with the project venv:
+  PYTHONPATH=. .venv/bin/python -m multifox.personas [count]
 
-The identity count comes from ffid.sh (FFID_SESSIONS, default 10). Proxies are
-cycled modulo the entries in proxies.conf; the OS/screen presets cycle too,
-but every identity still gets a unique randomly-generated BrowserForge
-fingerprint.
+Proxies are cycled modulo the entries in proxies.conf; the OS/screen presets
+cycle too, but every identity still gets a unique randomly-generated
+BrowserForge fingerprint.
 """
 
 import json

@@ -9,7 +9,7 @@ Then open http://multifox.localhost:8787
 Binds localhost only. Launch uses the Playwright controller (controller.py):
 headed windows under automation control, with live screenshots in the UI.
 The dashboard must stay alive for the whole session — quitting it closes
-the browser windows. (For detached fire-and-forget windows, use ffid.sh.)
+the browser windows.
 """
 
 import atexit

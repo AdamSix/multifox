@@ -37,14 +37,13 @@ Quick start:
 ## Run from source
 
 Requirements: Python 3.10+ on PATH, ~700MB disk for the browser download.
-macOS, Linux, or Windows (the `ffid.sh` CLI is macOS/Linux only; the
-dashboard works everywhere).
+macOS, Linux, or Windows.
 
 ```sh
 git clone https://github.com/AdamSix/multifox.git
 cd multifox
-python3 install.py           # Windows: py install.py
-./ffid.sh dashboard          # Windows: .venv\Scripts\python dashboard.py
+python3 install.py               # Windows: py install.py
+.venv/bin/python dashboard.py    # Windows: .venv\Scripts\python dashboard.py
 ```
 
 Then open http://multifox.localhost:8787 (plain http://127.0.0.1:8787 works
@@ -55,26 +54,9 @@ in System Settings → Privacy & Security → Accessibility). Keep the dashboard
 running for the whole session.
 
 The desktop launcher updates Camoufox automatically on every startup,
-continuing with the installed browser if the update fails. CLI users update
-with `./ffid.sh update`. The dashboard warns when the installed Camoufox is
-behind the latest release.
-
-## CLI usage (macOS/Linux)
-
-The dashboard covers the common workflow, but everything is also available as
-detached CLI commands (browser windows survive the terminal exiting):
-
-```sh
-./ffid.sh setup              # same as python3 install.py
-./ffid.sh create             # build profiles + personas (FFID_SESSIONS=4 to change the count)
-./ffid.sh launch [url]       # open one window per identity
-./ffid.sh stop               # kill everything and DELETE the profiles
-./ffid.sh status             # what's running
-./ffid.sh update             # upgrade camoufox package + browser
-```
-
-The CLI reads `proxies.conf` directly — with proxies off being the
-recommended default, put one `DIRECT` line per identity in it.
+continuing with the installed browser if the update fails. From a source
+checkout, update with `.venv/bin/python -m multifox.core update`. The
+dashboard warns when the installed Camoufox is behind the latest release.
 
 ## Desktop app builds
 
@@ -87,7 +69,7 @@ Layout: the Python code lives in the `multifox/` package (`core`, `personas`,
 `controller`, `dashboard`, `launcher`, plus `static/`), with thin
 `launcher.py` / `dashboard.py` shims at the root so `python3 launcher.py` and
 the PyInstaller specs keep working. Build scripts and specs are in
-`packaging/`; `install.py` and the `ffid.sh` CLI stay at the root.
+`packaging/`; `install.py` stays at the root.
 
 Builds are per-machine (PyInstaller does not cross-compile): build on an
 Apple Silicon Mac for arm64, on an Intel Mac for x86_64. The app is unsigned
@@ -98,7 +80,7 @@ Silicon, Intel, and Windows apps and attaches the zips to a GitHub Release.
 To cut a release:
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 ## Proxies (experimental)
@@ -113,7 +95,8 @@ geolocation match its exit IP.
 
 - Dashboard: flip the proxies toggle on and edit `proxies.conf` in the data
   dir (`~/Library/Application Support/multifox` on macOS, `%APPDATA%\multifox`
-  on Windows). CLI: edit `proxies.conf` in the project directory.
+  on Windows). From a source checkout: edit `proxies.conf` in the project
+  directory.
 - One SOCKS5 `host:port` per line, in identity order (id1, id2, …). Each line
   must be a **different egress** — two identities sharing an exit IP are
   linked. `DIRECT` means no proxy for that identity.

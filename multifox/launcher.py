@@ -31,7 +31,7 @@ DISPLAY_NAME = "multifox"
 
 def runtime_dir():
     if not getattr(sys, "frozen", False):
-        return Path(__file__).resolve().parent
+        return Path(__file__).resolve().parent.parent
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / APP_NAME
     if sys.platform == "win32":

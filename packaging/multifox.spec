@@ -83,7 +83,7 @@ app = BUNDLE(
     icon=None,
     bundle_identifier="com.multifox.app",
     info_plist={
-        "CFBundleShortVersionString": "0.2.0",
+        "CFBundleShortVersionString": "0.3.0",
         "NSHighResolutionCapable": True,
     },
 )
