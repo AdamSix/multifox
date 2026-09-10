@@ -1,5 +1,5 @@
 """
-Playwright controller for ff-sessions — launches identities as persistent
+Playwright controller for multifox — launches identities as persistent
 contexts and keeps them under automation control (screenshots now, goto/eval/
 harvest later).
 
@@ -65,20 +65,22 @@ class Controller:
 
     # -- commands (driver thread only) --------------------------------------
 
-    def _cmd_launch(self, url, log):
+    def _cmd_launch(self, url, log, progress=None):
         idents = ffid_core.existing_idents()
         if not idents:
             raise RuntimeError("no profiles found — run create first")
         ff = ffid_core.browser_path()
         entries = ffid_core.effective_entries()
         launched = 0
-        for ident in idents:
+        for n, ident in enumerate(idents, 1):
             if ident in self._contexts:
                 log(f"{ident}: already controlled, skipping")
                 continue
             profile_dir = ffid_core.PROFILES / ident
             if not (profile_dir / "persona.env").is_file():
                 raise RuntimeError(f"{profile_dir} is incomplete — run create first")
+            if progress:
+                progress(f"Launching window {n}/{len(idents)}", n, len(idents))
             if ffid_core.LAUNCH_STAGGER > 0:
                 time.sleep(random.randint(0, ffid_core.LAUNCH_STAGGER))
             entry = ffid_core.proxy_for(int(ident[2:]), entries)
@@ -120,6 +122,24 @@ class Controller:
         entry["shot"] = (time.time(), data)
         return data
 
+    def _cmd_reload(self, url, log, progress=None):
+        if not self._contexts:
+            raise RuntimeError("no controlled sessions to reload")
+        contexts = sorted(self._contexts.items(), key=lambda kv: int(kv[0][2:]))
+        for n, (ident, entry) in enumerate(contexts, 1):
+            if progress:
+                progress(f"Reloading window {n}/{len(contexts)}", n, len(contexts))
+            try:
+                if url and url != "about:blank":
+                    entry["page"].goto(url, wait_until="domcontentloaded", timeout=60000)
+                else:
+                    entry["page"].reload(wait_until="domcontentloaded", timeout=60000)
+                entry["shot"] = None
+                log(f"reloaded {ident}")
+            except Exception as exc:
+                log(f"error: {ident} failed to reload: {exc}")
+        return len(self._contexts)
+
     def _cmd_stop(self, log):
         count = len(self._contexts)
         for ident, entry in list(self._contexts.items()):
@@ -137,12 +157,15 @@ class Controller:
 
     # -- public API (any thread) ---------------------------------------------
 
-    def launch(self, url, log):
+    def launch(self, url, log, progress=None):
         # generous timeout: stagger + N context launches
-        return self._dispatch("launch", url, log, timeout=3600)
+        return self._dispatch("launch", url, log, progress, timeout=3600)
 
     def screenshot(self, ident):
         return self._dispatch("screenshot", ident)
+
+    def reload(self, url, log, progress=None):
+        return self._dispatch("reload", url, log, progress, timeout=600)
 
     def stop(self, log):
         return self._dispatch("stop", log, timeout=120)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-One-time installer for ff-sessions — works on macOS, Linux and Windows.
+One-time installer for multifox — works on macOS, Linux and Windows.
 
   python3 install.py      (Windows: py install.py)
 

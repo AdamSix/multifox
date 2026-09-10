@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Local web dashboard for ff-sessions — manage Camoufox identity profiles
+Local web dashboard for multifox — manage Camoufox identity profiles
 (create / launch / stop / status) from a browser UI.
 
 Run with the project venv: .venv/bin/python dashboard.py
@@ -14,6 +14,8 @@ the browser windows. (For detached fire-and-forget windows, use ffid.sh.)
 
 import atexit
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -27,6 +29,9 @@ import ffid_core
 STATIC = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "static"
 HOST = "127.0.0.1"
 PORT = 8787
+
+# Full job logs (the UI shows only progress + warnings) for the "full log" button.
+LOG_FILE = ffid_core.ROOT / "dashboard.log"
 
 _jobs = []
 _jobs_lock = threading.Lock()
@@ -44,7 +49,7 @@ def _freshness_worker():
 
 
 def _start_job(kind, fn, *args):
-    """Run fn(*args, log=...) in a background thread; returns (job, error)."""
+    """Run fn(*args, log=..., progress=...) in a background thread; returns (job, error)."""
     global _job_seq
     with _jobs_lock:
         if any(j["status"] == "running" for j in _jobs):
@@ -55,18 +60,37 @@ def _start_job(kind, fn, *args):
             "kind": kind,
             "status": "running",
             "log": [],
+            "progress": {"message": "starting…", "current": None, "total": None},
             "started_at": time.time(),
         }
         _jobs.append(job)
         del _jobs[:-10]  # keep the last 10
 
+    try:
+        with LOG_FILE.open("a") as fh:
+            fh.write(f"\n=== {kind} job {_job_seq} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    except OSError:
+        pass
+
     def log(line):
         with _jobs_lock:
             job["log"].append(str(line))
+        try:
+            with LOG_FILE.open("a") as fh:
+                fh.write(str(line) + "\n")
+        except OSError:
+            pass
+
+    def progress(message, current=None, total=None):
+        with _jobs_lock:
+            job["progress"] = {"message": str(message), "current": current, "total": total}
 
     def run():
         try:
-            fn(*args, log=log)
+            fn(*args, log=log, progress=progress)
+            with _jobs_lock:
+                if job["log"]:
+                    job["progress"]["message"] = job["log"][-1]
             job["status"] = "done"
         except Exception as exc:
             log(f"error: {exc}")
@@ -76,20 +100,40 @@ def _start_job(kind, fn, *args):
     return job, None
 
 
-def _stop_all(log):
+def _stop_all(log, progress=None):
+    if progress:
+        progress("Closing browser windows…")
     try:
         controller.get_controller().stop(log)
     except RuntimeError as exc:
         log(f"controller: {exc}")
+    if progress:
+        progress("Deleting profiles…")
     ffid_core.stop_profiles(log)
 
 
-def _update_all(log):
-    if controller._instance is not None and controller.get_controller().controlled_idents():
-        raise RuntimeError("stop all identities before updating camoufox")
-    ffid_core.update_camoufox(log)
-    global _freshness
-    _freshness = ffid_core.log_camoufox_freshness(log)
+def _start_sessions(count, url, log, progress=None):
+    ffid_core.create_profiles(count, log, progress=progress)
+    controller.get_controller().launch(url, log, progress=progress)
+
+
+def _sessions_running():
+    if controller._instance is None:
+        return False
+    try:
+        return bool(controller.get_controller().controlled_idents())
+    except Exception:
+        return False
+
+
+def _open_log_file():
+    LOG_FILE.touch(exist_ok=True)
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-t", str(LOG_FILE)])
+    elif sys.platform == "win32":
+        os.startfile(str(LOG_FILE))  # noqa: S606 - local user action
+    else:
+        subprocess.Popen(["xdg-open", str(LOG_FILE)])
 
 
 def _state():
@@ -142,6 +186,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/api/state":
             self._send_json(_state())
+        elif self.path == "/api/proxies/conf":
+            self._send_json({"text": ffid_core.proxy_conf_text()})
         elif self.path.startswith("/api/shot/"):
             ident = self.path[len("/api/shot/"):].split("?", 1)[0]
             try:
@@ -162,7 +208,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._read_json()
-        if self.path == "/api/create":
+        if self.path == "/api/start":
+            try:
+                count = int(body.get("count", 10))
+            except (TypeError, ValueError):
+                self._send_json({"error": "count must be an integer"}, 400)
+                return
+            url = body.get("url") or "about:blank"
+            if _sessions_running():
+                job, err = _start_job(
+                    "reload",
+                    lambda u, log, progress: controller.get_controller().reload(u, log, progress),
+                    url,
+                )
+            else:
+                job, err = _start_job("start", _start_sessions, count, url)
+        elif self.path == "/api/create":
             try:
                 count = int(body.get("count", 10))
             except (TypeError, ValueError):
@@ -172,7 +233,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/launch":
             url = body.get("url") or "about:blank"
             job, err = _start_job(
-                "launch", lambda u, log: controller.get_controller().launch(u, log), url
+                "launch",
+                lambda u, log, progress: controller.get_controller().launch(u, log, progress),
+                url,
             )
         elif self.path == "/api/stop":
             job, err = _start_job("stop", _stop_all)
@@ -180,8 +243,22 @@ class Handler(BaseHTTPRequestHandler):
             ffid_core.set_proxies_enabled(bool(body.get("enabled", True)))
             self._send_json({"proxies_enabled": ffid_core.proxies_enabled()})
             return
-        elif self.path == "/api/update":
-            job, err = _start_job("update", _update_all)
+        elif self.path == "/api/proxies/conf":
+            text = body.get("text")
+            if not isinstance(text, str):
+                self._send_json({"error": "text must be a string"}, 400)
+                return
+            ffid_core.write_proxy_conf(text)
+            self._send_json({"ok": True})
+            return
+        elif self.path == "/api/open-log":
+            try:
+                _open_log_file()
+            except OSError as exc:
+                self._send_json({"error": f"could not open log: {exc}"}, 500)
+                return
+            self._send_json({"ok": True})
+            return
         else:
             self._send_json({"error": "not found"}, 404)
             return
@@ -205,7 +282,7 @@ def main():
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     threading.Thread(target=_freshness_worker, daemon=True).start()
-    print(f"ff-sessions dashboard: http://{HOST}:{PORT}  (Ctrl-C to quit)")
+    print(f"multifox dashboard: http://{HOST}:{PORT}  (Ctrl-C to quit)")
     print("note: quitting the dashboard closes all browser windows it launched")
     try:
         server.serve_forever()

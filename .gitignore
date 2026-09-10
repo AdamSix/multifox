@@ -5,4 +5,5 @@ __pycache__/
 build/
 dist/
 launcher.log
+dashboard.log
 settings.json

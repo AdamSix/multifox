@@ -1,4 +1,4 @@
-# ff-sessions
+# multifox
 
 Run many isolated, fingerprint-spoofed browser sessions side by side. Each
 identity gets its own disposable Firefox profile, its own SOCKS5 exit IP, and a
@@ -51,9 +51,11 @@ exit IP.
 
 ## Updating
 
-The dashboard checks on startup and shows an amber warning when the Camoufox
-browser or python package is behind the latest release. Click **Update
-camoufox** in the dashboard, or run `./ffid.sh update`.
+The desktop launcher updates Camoufox automatically on every startup: if the
+update fails but a browser is already installed, it logs a warning and
+continues with the installed one. CLI users can update manually with
+`./ffid.sh update`. The dashboard shows an amber warning when the installed
+Camoufox browser or python package is behind the latest release.
 
 ## Desktop app
 

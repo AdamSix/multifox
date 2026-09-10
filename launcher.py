@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Desktop launcher for ff-sessions — the packaged app's entry point.
+Desktop launcher for multifox — the packaged app's entry point.
 
 Shows a small native window that:
   1. on first run, downloads the Camoufox browser + GeoIP database
@@ -26,6 +26,7 @@ import webbrowser
 from pathlib import Path
 
 APP_NAME = "ff-sessions"
+DISPLAY_NAME = "multifox"
 
 
 def runtime_dir():
@@ -53,7 +54,7 @@ class Launcher:
 
         self._tk = tk
         self.root = tk.Tk()
-        self.root.title(APP_NAME)
+        self.root.title(DISPLAY_NAME)
         self.root.resizable(False, False)
 
         self.status = tk.StringVar(value="starting…")
@@ -62,7 +63,7 @@ class Launcher:
         frame = tk.Frame(self.root, padx=16, pady=16)
         frame.pack()
 
-        tk.Label(frame, text=APP_NAME, font=("", 16, "bold")).pack(anchor="w")
+        tk.Label(frame, text=DISPLAY_NAME, font=("", 16, "bold")).pack(anchor="w")
         tk.Label(frame, textvariable=self.status).pack(anchor="w", pady=(2, 8))
 
         self.log = tk.Text(frame, width=72, height=14, state="disabled")
@@ -120,6 +121,7 @@ class Launcher:
         try:
             self._setup_runtime_dir()
             self._ensure_browser()
+            self._update_browser()
             self._start_dashboard()
             self._ui.put(("ready", ""))
         except Exception:
@@ -187,6 +189,25 @@ class Launcher:
         fetcher.install()
         self.log_line("browser installed")
         self._ensure_mmdb()
+
+    def _update_browser(self):
+        """Unskippable at startup: try to update camoufox; fall back to what's installed."""
+        import ffid_core
+
+        self.set_status("updating camoufox…")
+        try:
+            ffid_core.update_camoufox(self.log_line)
+        except Exception as exc:
+            from camoufox.pkgman import CamoufoxNotInstalled, installed_verstr
+
+            try:
+                ver = installed_verstr()
+            except CamoufoxNotInstalled:
+                raise  # nothing installed to fall back on
+            self.log_line(
+                f"warning: camoufox update failed ({exc}); "
+                f"continuing with installed browser {ver}"
+            )
 
     def _ensure_mmdb(self):
         try:

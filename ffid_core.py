@@ -34,13 +34,24 @@ SETTINGS = ROOT / "settings.json"
 def proxies_enabled():
     """Global proxy toggle (dashboard UI). Off = every identity goes DIRECT."""
     try:
-        return bool(json.loads(SETTINGS.read_text()).get("proxies", True))
+        return bool(json.loads(SETTINGS.read_text()).get("proxies", False))
     except (OSError, ValueError):
-        return True
+        return False
 
 
 def set_proxies_enabled(enabled):
     SETTINGS.write_text(json.dumps({"proxies": bool(enabled)}) + "\n")
+
+
+def proxy_conf_text():
+    try:
+        return CONF.read_text()
+    except OSError:
+        return ""
+
+
+def write_proxy_conf(text):
+    CONF.write_text(text if text.endswith("\n") else text + "\n")
 
 
 def effective_entries():
@@ -231,7 +242,7 @@ def write_user_js(profile_dir, index, entry):
     (profile_dir / "user.js").write_text("\n".join(lines) + "\n")
 
 
-def create_profiles(count, log=print):
+def create_profiles(count, log=print, progress=None):
     if not 1 <= count <= MAX_SESSIONS:
         raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {count})")
     entries = effective_entries()
@@ -248,6 +259,8 @@ def create_profiles(count, log=print):
     PROFILES.mkdir(parents=True, exist_ok=True)
     for i in range(count):
         ident = f"id{i + 1}"
+        if progress:
+            progress(f"Preparing profile {i + 1}/{count}", i + 1, count)
         entry = entries[i % len(entries)]
         if entry == "DIRECT" and proxies_enabled():
             log(f"warning: {ident} will connect DIRECTLY (your real IP)")
@@ -255,7 +268,7 @@ def create_profiles(count, log=print):
         profile_dir.mkdir(parents=True, exist_ok=True)
         write_user_js(profile_dir, i, entry)
     # one Camoufox persona per identity (GeoIP lookups through the proxies, if any)
-    for line in generate_personas(count, entries):
+    for line in generate_personas(count, entries, progress=progress):
         log(line)
     log(f"Done. {count} profiles created.")
 
@@ -325,7 +338,7 @@ def stop_profiles(log=print):
     # safety: only ever delete the profiles dir inside this project's folder
     if PROFILES.is_dir() and PROFILES == ROOT / "profiles":
         shutil.rmtree(PROFILES)
-        log("profiles deleted — run create to start a fresh set")
+        log("profiles deleted — click Start to begin a fresh set")
 
 
 def _persona_summary(profile_dir):

@@ -50,7 +50,7 @@ def proxy_entries():
     ]
 
 
-def generate_personas(count, entries=None):
+def generate_personas(count, entries=None, progress=None):
     """Write one persona.env per profiles/idN dir; returns log lines.
 
     entries overrides the proxy list (ffid_core passes ['DIRECT'] when the
@@ -69,6 +69,8 @@ def generate_personas(count, entries=None):
     lines = []
     for i in range(count):
         ident = f"id{i + 1}"
+        if progress:
+            progress(f"Creating identity {i + 1}/{count}", i + 1, count)
         out = PROFILES / ident / "persona.env"
         if not out.parent.is_dir():
             raise RuntimeError(f"{out.parent} missing — run create first")

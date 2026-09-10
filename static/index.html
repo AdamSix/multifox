@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ff-sessions</title>
+<title>multifox</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { color-scheme: dark; }
@@ -12,12 +12,13 @@
     background: #0d1117; color: #c9d1d9;
     font: 14px/1.5 -apple-system, "SF Mono", Menlo, monospace;
   }
-  h1 { font-size: 18px; margin: 0 0 16px; color: #f0f6fc; }
-  h1 span { color: #8b949e; font-weight: normal; }
+  h1 { font-size: 18px; margin: 0 0 4px; color: #f0f6fc; }
+  .tagline { margin: 0 0 16px; color: #8b949e; font-size: 13px; }
   .controls {
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
     padding: 12px; background: #161b22; border: 1px solid #30363d; border-radius: 8px;
   }
+  .controls .actions { margin-left: auto; display: flex; gap: 8px; }
   input {
     background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
     border-radius: 6px; padding: 6px 10px; font: inherit;
@@ -32,13 +33,44 @@
   button:disabled { opacity: 0.4; cursor: default; }
   button.danger { color: #f85149; }
   #job {
-    margin: 16px 0; padding: 12px; background: #161b22;
-    border: 1px solid #30363d; border-radius: 8px; white-space: pre-wrap;
-    font-size: 13px; height: 84px; overflow-y: auto; display: none;
+    margin: 16px auto; padding: 14px 16px; background: #161b22;
+    border: 1px solid #30363d; border-radius: 8px;
+    font-size: 13px; display: none; max-width: 560px; text-align: center;
+    position: relative;
   }
-  #job .running { color: #d29922; }
-  #job .done { color: #3fb950; }
-  #job .error { color: #f85149; }
+  .log-btn {
+    position: absolute; top: 10px; right: 12px;
+    font-size: 12px; padding: 3px 10px; border-radius: 12px;
+  }
+  .job-head { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 6px; }
+  .job-title { font-weight: 600; color: #f0f6fc; }
+  .job-title.done { color: #3fb950; }
+  .job-title.error { color: #f85149; }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; flex: none;
+    border: 2px solid #30363d; border-top-color: #d29922;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .job-icon { font-weight: 700; flex: none; width: 14px; text-align: center; }
+  .job-icon.done { color: #3fb950; }
+  .job-icon.error { color: #f85149; }
+  .job-activity { color: #c9d1d9; margin-bottom: 10px; }
+  .bar { height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
+  .bar-fill {
+    height: 100%; background: #1f6feb; border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+  .bar-fill.indeterminate { width: 35%; animation: slide 1.1s ease-in-out infinite; }
+  @keyframes slide {
+    0% { margin-left: -35%; }
+    100% { margin-left: 100%; }
+  }
+  .job-warnings {
+    margin-top: 10px; padding-top: 8px; border-top: 1px solid #21262d;
+    white-space: pre-wrap; color: #d29922; font-size: 12px;
+    max-height: 110px; overflow-y: auto;
+  }
   #grid {
     display: grid; gap: 12px; margin-top: 8px;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -71,34 +103,96 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .empty { color: #8b949e; padding: 24px 0; text-align: center; }
-  body > footer { margin-top: 24px; color: #6e7681; font-size: 12px; }
+
+  /* pretty toggle switch */
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .switch input { display: none; }
+  .switch .slider {
+    width: 38px; height: 22px; border-radius: 22px; position: relative;
+    background: #30363d; border: 1px solid #484f58; transition: background 0.2s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #8b949e; transition: transform 0.2s, background 0.2s;
+  }
+  .switch input:checked + .slider { background: #1f6feb; border-color: #1f6feb; }
+  .switch input:checked + .slider::before { transform: translateX(16px); background: #fff; }
+
+  /* proxy edit modal */
+  #modal-overlay {
+    position: fixed; inset: 0; background: rgba(1, 4, 9, 0.7);
+    display: none; align-items: center; justify-content: center; z-index: 10;
+  }
+  #modal-overlay.open { display: flex; }
+  #modal {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 20px; width: 600px; max-width: 92vw;
+  }
+  #modal h2 { margin: 0 0 10px; font-size: 15px; color: #f0f6fc; }
+  #modal p { margin: 0 0 10px; font-size: 13px; color: #8b949e; }
+  #modal code { color: #c9d1d9; background: #0d1117; padding: 1px 5px; border-radius: 4px; }
+  #proxyconf {
+    width: 100%; height: 220px; resize: vertical; margin-bottom: 12px;
+    background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 8px 10px; font: 13px/1.5 "SF Mono", Menlo, monospace;
+  }
+  #modal .buttons { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
 </head>
 <body>
-<h1>ff-sessions <span>— isolated Camoufox identities</span></h1>
+<h1>multifox</h1>
+<p class="tagline">Run many isolated Firefox browsers side by side — each with its own fingerprint and exit IP. Stop wipes everything.</p>
 
 <div class="controls">
   <label>count <input id="count" type="number" min="1" max="100" value="10"></label>
-  <label>url <input id="url" type="text" value="https://browserleaks.com/ip"></label>
-  <label title="off = every identity uses your real IP"><input id="proxytoggle" type="checkbox" checked> proxies</label>
-  <button id="create">Create</button>
-  <button id="launch">Launch</button>
-  <button id="stop" class="danger">Stop &amp; wipe</button>
-  <button id="update">Update camoufox</button>
+  <label>url <input id="url" type="text" value="https://www.google.com"></label>
+  <label class="switch" title="off = every identity uses your real IP">
+    <input id="proxytoggle" type="checkbox">
+    <span class="slider"></span>
+    proxies
+  </label>
+  <button id="proxyedit" style="display:none">edit</button>
   <span id="proxies"></span>
   <span id="stale"></span>
+  <span class="actions">
+    <button id="start">Start</button>
+    <button id="stop" class="danger">Stop</button>
+  </span>
 </div>
 
-<div id="job"></div>
+<div id="job">
+  <button id="openlog" class="log-btn" title="open the full log in your text editor">full log</button>
+  <div id="job-body"></div>
+</div>
+
+<div id="modal-overlay">
+  <div id="modal">
+    <h2>Proxy settings</h2>
+    <p>
+      Each identity routes all its traffic through its own SOCKS5 proxy, so
+      every identity gets a different exit IP. When you press Start, a GeoIP
+      lookup is sent through each proxy so the identity's timezone, locale and
+      geolocation match its exit IP — <b>the proxies must be up at that moment</b>.
+    </p>
+    <p>
+      Format: one <code>host:port</code> per line, in identity order
+      (id1, id2, …). Lines starting with <code>#</code> are comments.
+      <code>DIRECT</code> means no proxy for that identity (your real IP).
+      Two identities sharing an exit IP are linked, so every line should be a
+      different egress — e.g. SSH tunnels: <code>ssh -N -D 127.0.0.1:1081 user@vps1</code>,
+      then list <code>127.0.0.1:1081</code> here.
+    </p>
+    <textarea id="proxyconf" spellcheck="false"></textarea>
+    <div class="buttons">
+      <button id="proxycancel">Cancel</button>
+      <button id="proxysave">Save</button>
+    </div>
+  </div>
+</div>
 
 <div id="grid"></div>
-<div id="empty" class="empty">no profiles — Create a set to begin</div>
-
-<footer>
-  Launch attaches the Playwright controller: windows close when the dashboard
-  exits. Identities launched via ffid.sh show as “untracked” (no live view).
-  Stop kills everything and deletes all profiles.
-</footer>
+<div id="empty" class="empty">no profiles — press Start to begin</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -115,18 +209,38 @@ async function api(path, body) {
   refresh();
 }
 
-$("create").onclick = () => api("/api/create", {count: +$("count").value});
-$("launch").onclick = () => api("/api/launch", {url: $("url").value});
+$("start").onclick = () => api("/api/start", {count: +$("count").value, url: $("url").value});
 $("stop").onclick = () => {
   if (confirm("Kill all identity instances and DELETE the profiles?")) api("/api/stop");
 };
-$("update").onclick = () => api("/api/update");
 $("proxytoggle").onchange = () => api("/api/proxies", {enabled: $("proxytoggle").checked});
+$("openlog").onclick = () => api("/api/open-log");
+
+const overlay = $("modal-overlay");
+$("proxyedit").onclick = async () => {
+  const res = await fetch("/api/proxies/conf");
+  $("proxyconf").value = (await res.json()).text || "";
+  overlay.classList.add("open");
+};
+$("proxycancel").onclick = () => overlay.classList.remove("open");
+overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.remove("open"); };
+$("proxysave").onclick = async () => {
+  const res = await fetch("/api/proxies/conf", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text: $("proxyconf").value}),
+  });
+  const data = await res.json();
+  if (!res.ok) alert(data.error || res.statusText);
+  else overlay.classList.remove("open");
+  refresh();
+};
 
 function esc(s) { return String(s ?? "?").replace(/</g, "&lt;"); }
 
 function render(state) {
   $("proxytoggle").checked = !!state.proxies_enabled;
+  $("proxyedit").style.display = state.proxies_enabled ? "" : "none";
   $("proxies").textContent = state.proxies_enabled
     ? `${state.proxy_entries} proxies configured (${state.direct_entries} DIRECT)`
     : "proxies off — everything uses your real IP";
@@ -140,27 +254,46 @@ function render(state) {
     stale.push(`camoufox pkg ${f.package_installed} → ${f.package_latest}`);
   $("stale").textContent = stale.length ? `update available: ${stale.join(", ")}` : "";
   $("stale").style.color = "#d29922";
-  $("update").textContent = stale.length ? "Update camoufox!" : "Update camoufox";
-  $("update").style.color = stale.length ? "#d29922" : "";
 
   const job = [...(state.jobs || [])].reverse().find(j => j.status === "running") ||
               (state.jobs || [])[state.jobs.length - 1];
   const jobEl = $("job");
+  const bodyEl = $("job-body");
   if (job) {
     jobEl.style.display = "block";
-    jobEl.innerHTML =
-      `<span class="${job.status}">● ${job.kind} — ${job.status}</span>\n` +
-      job.log.map(esc).join("\n");
-    jobEl.scrollTop = jobEl.scrollHeight;
+    const running = job.status === "running";
+    const titles = {
+      start: "Starting identities", reload: "Reloading sessions",
+      stop: "Stopping & wiping", create: "Creating identities",
+      launch: "Launching windows",
+    };
+    const icon = running
+      ? '<span class="spinner"></span>'
+      : `<span class="job-icon ${job.status}">${job.status === "done" ? "✓" : "✗"}</span>`;
+    const p = job.progress || {};
+    const pct = p.total ? Math.min(100, Math.round(100 * (p.current || 0) / p.total)) : null;
+    const bar = pct !== null
+      ? `<div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>`
+      : running
+        ? '<div class="bar"><div class="bar-fill indeterminate"></div></div>'
+        : "";
+    const warns = (job.log || []).filter(l => /warning|error|fail/i.test(l));
+    bodyEl.innerHTML =
+      `<div class="job-head">${icon}` +
+      `<span class="job-title ${job.status}">${titles[job.kind] || job.kind}` +
+      `${running ? "…" : job.status === "done" ? " — done" : " — failed"}</span></div>` +
+      `<div class="job-activity">${esc(p.message || (running ? "working…" : ""))}</div>` +
+      bar +
+      (warns.length ? `<div class="job-warnings">${warns.map(esc).join("\n")}</div>` : "");
+    const warnEl = bodyEl.querySelector(".job-warnings");
+    if (warnEl) warnEl.scrollTop = warnEl.scrollHeight;
   } else {
     jobEl.style.display = "none";
   }
 
   const busy = (state.jobs || []).some(j => j.status === "running");
-  $("create").disabled = busy;
-  $("launch").disabled = busy;
+  $("start").disabled = busy;
   $("stop").disabled = busy;
-  $("update").disabled = busy;
 
   // rebuild the grid only when the identity set or run-states change
   const sig = JSON.stringify(state.identities.map(i =>
