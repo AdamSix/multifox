@@ -31,6 +31,16 @@ _jobs = []
 _jobs_lock = threading.Lock()
 _job_seq = 0
 
+_freshness = {}
+
+
+def _freshness_worker():
+    global _freshness
+    try:
+        _freshness = ffid_core.log_camoufox_freshness()
+    except Exception:
+        pass
+
 
 def _start_job(kind, fn, *args):
     """Run fn(*args, log=...) in a background thread; returns (job, error)."""
@@ -73,6 +83,14 @@ def _stop_all(log):
     ffid_core.stop_profiles(log)
 
 
+def _update_all(log):
+    if controller._instance is not None and controller.get_controller().controlled_idents():
+        raise RuntimeError("stop all identities before updating camoufox")
+    ffid_core.update_camoufox(log)
+    global _freshness
+    _freshness = ffid_core.log_camoufox_freshness(log)
+
+
 def _state():
     state = ffid_core.status()
     controlled = set()
@@ -86,6 +104,7 @@ def _state():
         if ident["controlled"]:
             ident["running"] = True
     state["mode"] = "controller" if controlled else "none"
+    state["freshness"] = _freshness
     with _jobs_lock:
         state["jobs"] = [
             {k: v for k, v in j.items()} for j in _jobs[-5:]
@@ -156,6 +175,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif self.path == "/api/stop":
             job, err = _start_job("stop", _stop_all)
+        elif self.path == "/api/update":
+            job, err = _start_job("update", _update_all)
         else:
             self._send_json({"error": "not found"}, 404)
             return
@@ -178,6 +199,7 @@ def main():
                 pass
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
+    threading.Thread(target=_freshness_worker, daemon=True).start()
     print(f"ff-sessions dashboard: http://{HOST}:{PORT}  (Ctrl-C to quit)")
     print("note: quitting the dashboard closes all browser windows it launched")
     try:

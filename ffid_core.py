@@ -18,7 +18,9 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
+import urllib.request
 from pathlib import Path
 
 from gen_personas import generate_personas, proxy_entries
@@ -101,6 +103,80 @@ def browser_path():
     from camoufox.pkgman import launch_path
 
     return launch_path()
+
+
+def camoufox_freshness(timeout=10):
+    """Compare the installed Camoufox browser + package against the latest releases.
+
+    Returns a dict of version strings; values are None when a check couldn't run
+    (offline, package not installed). Never raises — callers decide whether
+    staleness is fatal.
+    """
+    info = {
+        "browser_installed": None,
+        "browser_latest": None,
+        "package_installed": None,
+        "package_latest": None,
+    }
+    try:
+        from importlib.metadata import version as pkg_version
+
+        info["package_installed"] = pkg_version("camoufox")
+    except Exception:
+        pass
+    try:
+        from camoufox.pkgman import installed_verstr
+
+        info["browser_installed"] = installed_verstr()
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/camoufox/json", timeout=timeout) as resp:
+            info["package_latest"] = json.load(resp)["info"]["version"]
+    except Exception:
+        pass
+    try:
+        from camoufox.pkgman import list_available_versions
+
+        latest = max(list_available_versions(include_prerelease=False), key=lambda v: v.version)
+        info["browser_latest"] = latest.version.full_string
+    except Exception:
+        pass
+    return info
+
+
+def log_camoufox_freshness(log=print):
+    """Warn when the Camoufox browser or python package is behind the latest release."""
+    info = camoufox_freshness()
+    if info["browser_latest"] and info["browser_installed"] and info["browser_installed"] != info["browser_latest"]:
+        log(
+            f"warning: Camoufox browser {info['browser_installed']} is behind latest "
+            f"{info['browser_latest']} — run './ffid.sh update'"
+        )
+    if info["package_latest"] and info["package_installed"] and info["package_installed"] != info["package_latest"]:
+        log(
+            f"warning: camoufox package {info['package_installed']} is behind latest "
+            f"{info['package_latest']} — run './ffid.sh update'"
+        )
+    return info
+
+
+def update_camoufox(log=print):
+    """Upgrade the camoufox package and fetch the latest browser (official/stable channel)."""
+    log_camoufox_freshness(log)
+    for cmd in (
+        [sys.executable, "-m", "pip", "install", "--upgrade", "camoufox[geoip]"],
+        [sys.executable, "-m", "camoufox", "set", "official/stable"],
+        [sys.executable, "-m", "camoufox", "fetch"],
+    ):
+        log(f"$ python {' '.join(cmd[1:])}")
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout.replace("\r", "\n").splitlines():
+            if line.strip():
+                log(line)
+        if proc.returncode:
+            raise RuntimeError(f"command failed (exit {proc.returncode}): {' '.join(cmd)}")
+    log("camoufox up to date")
 
 
 def write_user_js(profile_dir, index, entry):

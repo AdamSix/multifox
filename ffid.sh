@@ -2,7 +2,9 @@
 #
 # ffid.sh — manage isolated Camoufox identity profiles
 #
-#   ./ffid.sh setup     one-time: python venv + camoufox package install
+#   ./ffid.sh setup     one-time: python venv + camoufox install (same as: python3 install.py)
+#   ./ffid.sh update    upgrade camoufox (python package + browser) to the latest release
+#   ./ffid.sh dashboard start the web dashboard at http://127.0.0.1:8787
 #   ./ffid.sh create    create fresh profiles with per-profile config + personas
 #   ./ffid.sh launch [url]  open one window per profile (each via its own SOCKS5 exit),
 #                           optionally loading the given URL (default: about:blank)
@@ -121,6 +123,9 @@ cmd_create() {
   count=$(proxy_count)
   (( count > 0 )) || { echo "error: $CONF has no proxy entries" >&2; exit 1; }
   (( N > count )) && echo "warning: $count proxies for $N identities — egresses repeat (shared IPs link identities)" >&2
+  # non-blocking freshness check — warns if camoufox is behind the latest release
+  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -c "import ffid_core; ffid_core.log_camoufox_freshness()" \
+    || echo "warning: camoufox update check failed (offline?)" >&2
   # clear any previous set so a smaller N doesn't leave stale profiles behind
   if [[ -d "$PROFILES_DIR" && "$PROFILES_DIR" == "$ROOT/profiles" ]]; then
     rm -rf "$PROFILES_DIR"
@@ -168,17 +173,18 @@ cmd_launch() {
 }
 
 cmd_setup() {
-  echo "creating venv and installing the camoufox python package (used at create-time only)..."
-  python3 -m venv "$ROOT/.venv"
-  "$ROOT/.venv/bin/pip" install --quiet --upgrade pip
-  "$ROOT/.venv/bin/pip" install --quiet camoufox
-  "$ROOT/.venv/bin/python" -m camoufox fetch
-  "$ROOT/.venv/bin/python" -c "from camoufox.__version__ import __version__ as v; print('camoufox python package OK, version', v)"
-  if [[ -x "$FF" ]]; then
-    echo "browser binary: $("$FF" --version)"
-  else
-    echo "warning: Camoufox.app not found at $FF" >&2
-  fi
+  command -v python3 >/dev/null || { echo "error: python3 not found — install Python 3.10+ first" >&2; exit 1; }
+  python3 "$ROOT/install.py"
+}
+
+cmd_dashboard() {
+  [[ -x "$ROOT/.venv/bin/python" ]] || { echo "error: .venv missing — run '$0 setup' first" >&2; exit 1; }
+  exec "$ROOT/.venv/bin/python" "$ROOT/dashboard.py"
+}
+
+cmd_update() {
+  [[ -x "$ROOT/.venv/bin/python" ]] || { echo "error: .venv missing — run '$0 setup' first" >&2; exit 1; }
+  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -c "import ffid_core; ffid_core.update_camoufox()"
 }
 
 cmd_stop() {
@@ -205,10 +211,12 @@ cmd_status() {
 }
 
 case "${1:-}" in
-  setup)  cmd_setup ;;
-  create) cmd_create ;;
-  launch) cmd_launch "${2:-}" ;;
-  stop)   cmd_stop ;;
-  status) cmd_status ;;
-  *) echo "usage: $0 {setup|create|launch [url]|stop|status}"; exit 1 ;;
+  setup)     cmd_setup ;;
+  update)    cmd_update ;;
+  dashboard) cmd_dashboard ;;
+  create)    cmd_create ;;
+  launch)    cmd_launch "${2:-}" ;;
+  stop)      cmd_stop ;;
+  status)    cmd_status ;;
+  *) echo "usage: $0 {setup|update|dashboard|create|launch [url]|stop|status}"; exit 1 ;;
 esac

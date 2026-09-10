@@ -83,7 +83,9 @@
   <button id="create">Create</button>
   <button id="launch">Launch</button>
   <button id="stop" class="danger">Stop &amp; wipe</button>
+  <button id="update">Update camoufox</button>
   <span id="proxies"></span>
+  <span id="stale"></span>
 </div>
 
 <div id="job"></div>
@@ -117,12 +119,24 @@ $("launch").onclick = () => api("/api/launch", {url: $("url").value});
 $("stop").onclick = () => {
   if (confirm("Kill all identity instances and DELETE the profiles?")) api("/api/stop");
 };
+$("update").onclick = () => api("/api/update");
 
 function esc(s) { return String(s ?? "?").replace(/</g, "&lt;"); }
 
 function render(state) {
   $("proxies").textContent =
     `${state.proxy_entries} proxies configured (${state.direct_entries} DIRECT)`;
+
+  const f = state.freshness || {};
+  const stale = [];
+  if (f.browser_latest && f.browser_installed && f.browser_installed !== f.browser_latest)
+    stale.push(`browser ${f.browser_installed} → ${f.browser_latest}`);
+  if (f.package_latest && f.package_installed && f.package_installed !== f.package_latest)
+    stale.push(`camoufox pkg ${f.package_installed} → ${f.package_latest}`);
+  $("stale").textContent = stale.length ? `update available: ${stale.join(", ")}` : "";
+  $("stale").style.color = "#d29922";
+  $("update").textContent = stale.length ? "Update camoufox!" : "Update camoufox";
+  $("update").style.color = stale.length ? "#d29922" : "";
 
   const job = [...(state.jobs || [])].reverse().find(j => j.status === "running") ||
               (state.jobs || [])[state.jobs.length - 1];
@@ -141,6 +155,7 @@ function render(state) {
   $("create").disabled = busy;
   $("launch").disabled = busy;
   $("stop").disabled = busy;
+  $("update").disabled = busy;
 
   // rebuild the grid only when the identity set or run-states change
   const sig = JSON.stringify(state.identities.map(i =>
