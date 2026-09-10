@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from . import core as ffid_core
+from . import core, paths
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
@@ -155,46 +155,39 @@ class Controller:
     # -- commands (driver thread only) --------------------------------------
 
     def _cmd_launch(self, url, log, progress=None):
-        idents = ffid_core.existing_idents()
-        if not idents:
+        identities = core.load_identities()
+        if not identities:
             raise RuntimeError("no profiles found — run create first")
-        ff = ffid_core.browser_path()
-        entries = ffid_core.effective_entries()
+        ff = core.browser_path()
         launched = 0
-        for n, ident in enumerate(idents, 1):
-            if ident in self._contexts:
-                log(f"{ident}: already controlled, skipping")
+        for n, ident in enumerate(identities, 1):
+            if ident.id in self._contexts:
+                log(f"{ident.id}: already controlled, skipping")
                 continue
-            profile_dir = ffid_core.PROFILES / ident
-            if not (profile_dir / "persona.env").is_file():
-                raise RuntimeError(f"{profile_dir} is incomplete — run create first")
             if progress:
-                progress(f"Launching window {n}/{len(idents)}", n, len(idents))
-            if ffid_core.LAUNCH_STAGGER > 0:
-                time.sleep(random.randint(0, ffid_core.LAUNCH_STAGGER))
-            entry = ffid_core.proxy_for(int(ident[2:]), entries)
-            env = os.environ.copy()
-            env.update(ffid_core.load_persona_env(profile_dir / "persona.env"))
+                progress(f"Launching window {n}/{len(identities)}", n, len(identities))
+            if core.LAUNCH_STAGGER > 0:
+                time.sleep(random.randint(0, core.LAUNCH_STAGGER))
             kwargs = {
-                "user_data_dir": str(profile_dir),
+                "user_data_dir": str(ident.dir),
                 "executable_path": ff,
                 "headless": False,
-                "env": env,
-                "firefox_user_prefs": dict(ffid_core.FIREFOX_PREFS),
+                "env": {**os.environ, **ident.env},
+                "firefox_user_prefs": dict(core.FIREFOX_PREFS),
             }
-            if entry != "DIRECT":
-                kwargs["proxy"] = {"server": f"socks5://{entry}"}
+            if ident.proxy != "DIRECT":
+                kwargs["proxy"] = {"server": f"socks5://{ident.proxy}"}
             try:
                 ctx = self._pw.firefox.launch_persistent_context(**kwargs)
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 if url and url != "about:blank":
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                self._contexts[ident] = {"ctx": ctx, "page": page, "shot": None}
+                self._contexts[ident.id] = {"ctx": ctx, "page": page, "shot": None}
                 launched += 1
-                log(f"launched {ident} (controlled)")
+                log(f"launched {ident.id} (controlled)")
             except Exception as exc:
-                log(f"error: {ident} failed to launch: {exc}")
-        log(f"All {launched}/{len(idents)} identities controlled.")
+                log(f"error: {ident.id} failed to launch: {exc}")
+        log(f"All {launched}/{len(identities)} identities controlled.")
         return launched
 
     def _cmd_screenshot(self, ident):
@@ -219,7 +212,7 @@ class Controller:
             entry["page"].bring_to_front()
         except Exception:
             pass  # page may be closed; the OS raise below is the important part
-        return _raise_os_window(ffid_core.PROFILES / ident)
+        return _raise_os_window(paths.PROFILES / ident)
 
     def _cmd_reload(self, url, log, progress=None):
         if not self._contexts:
@@ -275,14 +268,3 @@ class Controller:
     def controlled_idents(self):
         return self._dispatch("controlled")
 
-
-_instance = None
-_instance_lock = threading.Lock()
-
-
-def get_controller():
-    global _instance
-    with _instance_lock:
-        if _instance is None:
-            _instance = Controller()
-        return _instance

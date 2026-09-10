@@ -27,8 +27,9 @@ command line needed:
 
 Quick start:
 
-1. Unzip and launch. On macOS the app is unsigned, so right-click → **Open**
-   the first time (or run
+1. Unzip and launch. On macOS the app is unsigned, so it will refuse to open
+   the first time: right-click → **Open**, or go to System Settings →
+   Privacy & Security, scroll down, and click **Open Anyway** (or run
    `xattr -dr com.apple.quarantine /path/to/multifox.app`).
 2. First run unpacks the bundled Camoufox browser and starts the dashboard,
    which opens right in the app window (no separate browser needed).
@@ -67,8 +68,8 @@ dashboard warns when the installed Camoufox is behind the latest release.
 .\packaging\build_app.ps1          # Windows: dist\multifox\ + dist\multifox.zip
 ```
 
-Layout: the Python code lives in the `multifox/` package (`core`, `personas`,
-`controller`, `dashboard`, `launcher`, plus `static/`), with thin
+Layout: the Python code lives in the `multifox/` package (`paths`, `core`,
+`personas`, `controller`, `app`, `dashboard`, `launcher`, plus `static/`), with thin
 `launcher.py` / `dashboard.py` shims at the root so `python3 launcher.py` and
 the PyInstaller specs keep working. Build scripts and specs are in
 `packaging/`; `install.py` stays at the root.

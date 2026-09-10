@@ -1,7 +1,10 @@
 """
 Cross-platform core for managing isolated Camoufox identity profiles:
-create/stop/status, driven by the dashboard. Browser discovery goes through
+create/delete/status, driven by the dashboard. Browser discovery goes through
 the camoufox package, so it works on macOS, Windows and Linux.
+
+Each identity is a directory profiles/idN holding the Firefox profile plus a
+profile.json with the proxy it was created for and its Camoufox persona env.
 
 Run '.venv/bin/python -m multifox.core update' to upgrade the camoufox
 package + browser (the packaged app updates itself on startup).
@@ -9,75 +12,33 @@ package + browser (the packaged app updates itself on startup).
 
 import json
 import os
-import re
-import shlex
 import shutil
 import subprocess
 import sys
-import time
 import urllib.request
-from pathlib import Path
+from dataclasses import dataclass
 
-from .personas import generate_personas, proxy_entries
+from . import paths
+from .personas import camou_config, generate_persona
 
-# Runtime data (proxies.conf, profiles/) lives here. Defaults to the project
-# directory; the packaged app sets FFID_HOME to a per-user data dir.
-ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent.parent)
-SETTINGS = ROOT / "settings.json"
-
-
-def proxies_enabled():
-    """Global proxy toggle (dashboard UI). Off = every identity goes DIRECT."""
-    try:
-        return bool(json.loads(SETTINGS.read_text()).get("proxies", False))
-    except (OSError, ValueError):
-        return False
-
-
-def set_proxies_enabled(enabled):
-    SETTINGS.write_text(json.dumps({"proxies": bool(enabled)}) + "\n")
-
-
-def proxy_conf_text():
-    try:
-        return CONF.read_text()
-    except OSError:
-        return ""
-
-
-def write_proxy_conf(text):
-    CONF.write_text(text if text.endswith("\n") else text + "\n")
-
-
-def effective_entries():
-    """Proxy entries actually in effect: ['DIRECT'] for all when toggled off."""
-    if not proxies_enabled():
-        return ["DIRECT"]
-    return proxy_entries()
-CONF = ROOT / "proxies.conf"
-PROFILES = ROOT / "profiles"
 MAX_SESSIONS = 100
 
 # Seconds of random stagger between launches (avoids synchronized first connections).
 LAUNCH_STAGGER = 5
 
-# ident -> {"popen": Popen, "url": str, "started_at": float}
-_tracked = {}
+PROFILE_FILE = "profile.json"
 
-
-# Non-proxy preferences, single source of truth: write_user_js renders these
-# into user.js for the CLI path, and the Playwright controller passes them as
-# firefox_user_prefs. (Proxy prefs differ per path and stay in write_user_js.)
-IPV6_PREF = {"network.dns.disableIPv6": True}
-
-WEBRTC_PREFS = {
+# Passed to every browser as firefox_user_prefs. No privacy.resistFingerprinting:
+# Camoufox does its own C++-level spoofing via the persona config; RFP would
+# conflict with it.
+FIREFOX_PREFS = {
+    "network.dns.disableIPv6": True,  # prevent IPv6 bypassing the proxy
+    # WebRTC: hard off + belt-and-suspenders
     "media.peerconnection.enabled": False,
     "media.peerconnection.ice.default_address_only": True,
     "media.peerconnection.ice.no_host": True,
     "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
-}
-
-HYGIENE_PREFS = {
+    # hygiene
     "browser.shell.checkDefaultBrowser": False,
     "browser.shell.skipDefaultBrowserCheckOnFirstRun": True,
     "browser.aboutwelcome.enabled": False,
@@ -91,37 +52,159 @@ HYGIENE_PREFS = {
     "signon.autofillForms": False,
     "browser.formfill.enable": False,
     "browser.sessionstore.resume_from_crash": False,
+    # never offer Troubleshoot Mode after a hard kill (second is the legacy name)
     "toolkit.startup.max_resumed_crashes": -1,
     "browser.sessionstore.max_resumed_crashes": -1,
     "dom.security.https_only_mode": True,
 }
 
-FIREFOX_PREFS = {**IPV6_PREF, **WEBRTC_PREFS, **HYGIENE_PREFS}
 
-# explanatory comments kept in the generated user.js
-_TRAILING_COMMENTS = {
-    "network.dns.disableIPv6": " // prevent IPv6 bypassing the proxy",
-    "toolkit.startup.max_resumed_crashes": " // never offer Troubleshoot Mode after a hard kill",
-    "browser.sessionstore.max_resumed_crashes": " // legacy name of the same pref",
-}
+# -- proxy settings -----------------------------------------------------------
 
 
-def _render_pref(key, value):
-    if isinstance(value, bool):
-        rendered = "true" if value else "false"
-    elif isinstance(value, str):
-        rendered = f'"{value}"'
-    else:
-        rendered = str(value)
-    return f'user_pref("{key}", {rendered});' + _TRAILING_COMMENTS.get(key, "")
+def proxies_enabled():
+    """Global proxy toggle (dashboard UI). Off = every identity goes DIRECT."""
+    try:
+        return bool(json.loads(paths.SETTINGS.read_text()).get("proxies", False))
+    except (OSError, ValueError):
+        return False
 
 
-def proxy_for(index, entries=None):
-    """1-based identity index -> proxies.conf entry, cycled modulo entry count."""
-    entries = proxy_entries() if entries is None else entries
+def set_proxies_enabled(enabled):
+    paths.SETTINGS.write_text(json.dumps({"proxies": bool(enabled)}) + "\n")
+
+
+def proxy_conf_text():
+    try:
+        return paths.PROXY_CONF.read_text()
+    except OSError:
+        return ""
+
+
+def write_proxy_conf(text):
+    paths.PROXY_CONF.write_text(text if text.endswith("\n") else text + "\n")
+
+
+def proxy_entries():
+    """Non-comment lines of proxies.conf: 'host:port' or 'DIRECT'."""
+    lines = (line.strip() for line in proxy_conf_text().splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
+
+
+def effective_entries():
+    """Proxy entries actually in effect: ['DIRECT'] for all when toggled off."""
+    if not proxies_enabled():
+        return ["DIRECT"]
+    return proxy_entries()
+
+
+# -- identities ---------------------------------------------------------------
+
+
+@dataclass
+class Identity:
+    index: int  # 1-based
+    proxy: str  # proxies.conf entry this identity was created for
+    env: dict  # CAMOU_* persona env for the browser process
+
+    @property
+    def id(self):
+        return f"id{self.index}"
+
+    @property
+    def dir(self):
+        return paths.PROFILES / self.id
+
+    def save(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        data = {"index": self.index, "proxy": self.proxy, "env": self.env}
+        (self.dir / PROFILE_FILE).write_text(json.dumps(data, indent=2) + "\n")
+
+    @classmethod
+    def load(cls, profile_file):
+        data = json.loads(profile_file.read_text())
+        return cls(index=int(data["index"]), proxy=data["proxy"], env=dict(data["env"]))
+
+    def summary(self):
+        try:
+            cfg = camou_config(self.env)
+        except ValueError:
+            return {"os": "?", "ua_tail": "?", "tz": "?"}
+        ua = cfg.get("navigator.userAgent", "")
+        if "Windows" in ua:
+            os_name = "windows"
+        elif "Macintosh" in ua:
+            os_name = "macos"
+        elif "Linux" in ua:
+            os_name = "linux"
+        else:
+            os_name = "?"
+        return {
+            "os": os_name,
+            "ua_tail": ua[-40:],
+            "tz": cfg.get("timezone", cfg.get("int:timezone", "?")),
+        }
+
+
+def load_identities():
+    """All complete identities on disk, ordered by index."""
+    if not paths.PROFILES.is_dir():
+        return []
+    identities = []
+    for profile_file in paths.PROFILES.glob(f"id*/{PROFILE_FILE}"):
+        try:
+            identities.append(Identity.load(profile_file))
+        except (OSError, ValueError, KeyError):
+            continue
+    return sorted(identities, key=lambda ident: ident.index)
+
+
+def create_profiles(count, log=print, progress=None):
+    if not 1 <= count <= MAX_SESSIONS:
+        raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {count})")
+    entries = effective_entries()
     if not entries:
-        raise RuntimeError(f"{CONF} has no proxy entries")
-    return entries[(index - 1) % len(entries)]
+        raise RuntimeError(f"{paths.PROXY_CONF} has no proxy entries")
+    if proxies_enabled():
+        if count > len(entries):
+            log(f"warning: {len(entries)} proxies for {count} identities — egresses repeat (shared IPs link identities)")
+    else:
+        log("proxies disabled — every identity connects DIRECTLY (your real IP)")
+    # clear any previous set so a smaller count doesn't leave stale profiles behind
+    delete_profiles()
+    for i in range(count):
+        if progress:
+            progress(f"Creating identity {i + 1}/{count}", i + 1, count)
+        proxy = entries[i % len(entries)]
+        if proxy == "DIRECT" and proxies_enabled():
+            log(f"warning: id{i + 1} will connect DIRECTLY (your real IP)")
+        env, lines = generate_persona(i, proxy)
+        for line in lines:
+            log(line)
+        Identity(index=i + 1, proxy=proxy, env=env).save()
+    log(f"Done. {count} profiles created.")
+
+
+def delete_profiles(log=None):
+    if paths.PROFILES.is_dir():
+        shutil.rmtree(paths.PROFILES)
+        if log:
+            log("profiles deleted — click Start to begin a fresh set")
+
+
+def status():
+    raw = proxy_entries()
+    return {
+        "proxy_entries": len(raw),
+        "direct_entries": sum(1 for e in raw if e == "DIRECT"),
+        "proxies_enabled": proxies_enabled(),
+        "identities": [
+            {"id": ident.id, "proxy": ident.proxy, **ident.summary()} for ident in load_identities()
+        ],
+    }
+
+
+# -- camoufox browser ---------------------------------------------------------
 
 
 def browser_path():
@@ -176,15 +259,14 @@ def camoufox_freshness(timeout=10):
 def log_camoufox_freshness(log=print):
     """Warn when the Camoufox browser or python package is behind the latest release."""
     info = camoufox_freshness()
-    frozen = getattr(sys, "frozen", False)
     if info["browser_latest"] and info["browser_installed"] and info["browser_installed"] != info["browser_latest"]:
-        hint = "it will update automatically now" if frozen else "run 'python -m multifox.core update'"
+        hint = "it will update automatically now" if paths.FROZEN else "run 'python -m multifox.core update'"
         log(
             f"warning: Camoufox browser {info['browser_installed']} is behind latest "
             f"{info['browser_latest']} — {hint}"
         )
     if info["package_latest"] and info["package_installed"] and info["package_installed"] != info["package_latest"]:
-        hint = "download the latest multifox release" if frozen else "run 'python -m multifox.core update'"
+        hint = "download the latest multifox release" if paths.FROZEN else "run 'python -m multifox.core update'"
         log(
             f"warning: camoufox package {info['package_installed']} is behind latest "
             f"{info['package_latest']} — {hint}"
@@ -228,7 +310,7 @@ def update_camoufox(log=print):
     Package updates reach frozen users as new multifox releases.
     """
     log_camoufox_freshness(log)
-    if getattr(sys, "frozen", False):
+    if paths.FROZEN:
         _update_browser_frozen(log)
         return
     for cmd in (
@@ -244,164 +326,6 @@ def update_camoufox(log=print):
         if proc.returncode:
             raise RuntimeError(f"command failed (exit {proc.returncode}): {' '.join(cmd)}")
     log("camoufox up to date")
-
-
-def write_user_js(profile_dir, index, entry):
-    """index is 0-based; entry is a proxies.conf line ('host:port' or 'DIRECT')."""
-    lines = [f"// identity {index + 1} — generated by multifox, recreated on every create", ""]
-    if entry == "DIRECT":
-        lines.append('user_pref("network.proxy.type", 0); // WARNING: direct connection, no proxy')
-    else:
-        host, _, port = entry.rpartition(":")
-        lines += [
-            'user_pref("network.proxy.type", 1);',
-            f'user_pref("network.proxy.socks", "{host}");',
-            f'user_pref("network.proxy.socks_port", {port});',
-            'user_pref("network.proxy.socks_version", 5);',
-            'user_pref("network.proxy.socks_remote_dns", true);',
-            'user_pref("network.proxy.failover_direct", false); // never leak direct if proxy dies',
-        ]
-    lines += [
-        _render_pref("network.dns.disableIPv6", True),
-        "",
-        "// WebRTC: hard off + belt-and-suspenders",
-        *(_render_pref(k, v) for k, v in WEBRTC_PREFS.items()),
-        "",
-        "// NOTE: no privacy.resistFingerprinting here — Camoufox does its own",
-        "// C++-level spoofing via the persona config; RFP would conflict with it.",
-        "",
-        "// hygiene",
-        *(_render_pref(k, v) for k, v in HYGIENE_PREFS.items()),
-    ]
-    (profile_dir / "user.js").write_text("\n".join(lines) + "\n")
-
-
-def create_profiles(count, log=print, progress=None):
-    if not 1 <= count <= MAX_SESSIONS:
-        raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {count})")
-    entries = effective_entries()
-    if not entries:
-        raise RuntimeError(f"{CONF} has no proxy entries")
-    if proxies_enabled():
-        if count > len(entries):
-            log(f"warning: {len(entries)} proxies for {count} identities — egresses repeat (shared IPs link identities)")
-    else:
-        log("proxies disabled — every identity connects DIRECTLY (your real IP)")
-    # clear any previous set so a smaller count doesn't leave stale profiles behind
-    if PROFILES.is_dir() and PROFILES == ROOT / "profiles":
-        shutil.rmtree(PROFILES)
-    PROFILES.mkdir(parents=True, exist_ok=True)
-    for i in range(count):
-        ident = f"id{i + 1}"
-        if progress:
-            progress(f"Preparing profile {i + 1}/{count}", i + 1, count)
-        entry = entries[i % len(entries)]
-        if entry == "DIRECT" and proxies_enabled():
-            log(f"warning: {ident} will connect DIRECTLY (your real IP)")
-        profile_dir = PROFILES / ident
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        write_user_js(profile_dir, i, entry)
-    # one Camoufox persona per identity (GeoIP lookups through the proxies, if any)
-    for line in generate_personas(count, entries, progress=progress):
-        log(line)
-    log(f"Done. {count} profiles created.")
-
-
-def load_persona_env(path):
-    env = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line.startswith("export ") or "=" not in line:
-            continue
-        key, _, value = line[len("export "):].partition("=")
-        parsed = shlex.split(value)
-        env[key] = parsed[0] if parsed else ""
-    return env
-
-
-def existing_idents():
-    if not PROFILES.is_dir():
-        return []
-    idents = [p.name for p in PROFILES.iterdir() if p.is_dir() and re.fullmatch(r"id\d+", p.name)]
-    return sorted(idents, key=lambda name: int(name[2:]))
-
-
-def stop_profiles(log=print):
-    running = {ident: t for ident, t in _tracked.items() if t["popen"].poll() is None}
-    if running:
-        for t in running.values():
-            t["popen"].terminate()
-        log(f"terminated {len(running)} instances, waiting for exit…")
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            if all(t["popen"].poll() is not None for t in running.values()):
-                break
-            time.sleep(0.5)
-        for ident, t in running.items():
-            if t["popen"].poll() is None:
-                log(f"force-killing {ident} (pid {t['popen'].pid})")
-                t["popen"].kill()
-        time.sleep(1)
-    else:
-        log("no tracked instances running")
-    _tracked.clear()
-    # safety: only ever delete the profiles dir inside this project's folder
-    if PROFILES.is_dir() and PROFILES == ROOT / "profiles":
-        shutil.rmtree(PROFILES)
-        log("profiles deleted — click Start to begin a fresh set")
-
-
-def _persona_summary(profile_dir):
-    persona = profile_dir / "persona.env"
-    if not persona.is_file():
-        return {}
-    try:
-        env = load_persona_env(persona)
-        cfg = json.loads("".join(v for k, v in sorted(env.items()) if k.startswith("CAMOU_CONFIG_")))
-    except (ValueError, OSError):
-        return {}
-    ua = cfg.get("navigator.userAgent", "")
-    if "Windows" in ua:
-        os_name = "windows"
-    elif "Macintosh" in ua:
-        os_name = "macos"
-    elif "Linux" in ua:
-        os_name = "linux"
-    else:
-        os_name = "?"
-    return {
-        "os": os_name,
-        "ua_tail": ua[-40:],
-        "tz": cfg.get("timezone", cfg.get("int:timezone", "?")),
-    }
-
-
-def status():
-    raw = proxy_entries() if CONF.is_file() else []
-    entries = effective_entries() if CONF.is_file() else []
-    identities = []
-    for ident in existing_idents():
-        index = int(ident[2:])
-        tracked = _tracked.get(ident)
-        if tracked is not None:
-            alive = tracked["popen"].poll() is None
-            state = {"tracked": True, "running": alive, "pid": tracked["popen"].pid if alive else None}
-        else:
-            state = {"tracked": False, "running": None, "pid": None}
-        identities.append(
-            {
-                "id": ident,
-                "proxy": proxy_for(index, entries) if entries else "?",
-                **_persona_summary(PROFILES / ident),
-                **state,
-            }
-        )
-    return {
-        "proxy_entries": len(raw),
-        "direct_entries": sum(1 for e in raw if e == "DIRECT"),
-        "proxies_enabled": proxies_enabled(),
-        "identities": identities,
-    }
 
 
 if __name__ == "__main__":

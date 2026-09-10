@@ -45,5 +45,6 @@ echo
 echo "built: $APP"
 echo "zipped: $ROOT/dist/multifox.zip"
 echo
-echo "note: the app is unsigned. On another Mac, right-click -> Open the first"
-echo "time (or run: xattr -dr com.apple.quarantine /path/to/multifox.app)"
+echo "note: the app is unsigned. On another Mac it will refuse to open the"
+echo "first time: right-click -> Open, or System Settings -> Privacy &"
+echo "Security -> Open Anyway (or: xattr -dr com.apple.quarantine /path/to/multifox.app)"

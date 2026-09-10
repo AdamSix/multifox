@@ -1,33 +1,18 @@
-#!/usr/bin/env python3
 """
 Generate one Camoufox persona per identity (called by core.create_profiles).
 
-For each profiles/idN directory, asks the camoufox python package to build a
-full fingerprint config (BrowserForge-generated, matching real-world device
-distributions), doing a GeoIP lookup through that identity's SOCKS5 proxy so
-timezone / locale / geolocation match the exit IP. The resulting CAMOU_CONFIG_*
-environment variables are written to profiles/idN/persona.env, which the
-controller loads before starting each identity's browser.
+Asks the camoufox python package to build a full fingerprint config
+(BrowserForge-generated, matching real-world device distributions). When the
+identity has a SOCKS5 proxy, a GeoIP lookup goes through that proxy so
+timezone / locale / geolocation match the exit IP. The resulting CAMOU_*
+environment variables are stored in the identity's profile.json and set on
+the browser process at launch.
 
-Run standalone with the project venv:
-  PYTHONPATH=. .venv/bin/python -m multifox.personas [count]
-
-Proxies are cycled modulo the entries in proxies.conf; the OS/screen presets
-cycle too, but every identity still gets a unique randomly-generated
-BrowserForge fingerprint.
+The OS/screen presets cycle per identity, but every identity still gets a
+unique randomly-generated BrowserForge fingerprint.
 """
 
 import json
-import os
-import shlex
-import sys
-from pathlib import Path
-
-# Runtime data (proxies.conf, profiles/) lives here. Defaults to the project
-# directory; the packaged app sets FFID_HOME to a per-user data dir.
-ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent.parent)
-CONF = ROOT / "proxies.conf"
-PROFILES = ROOT / "profiles"
 
 # OS mix roughly matching real-world desktop market share.
 OS_PERSONAS = ["windows"] * 7 + ["macos"] * 2 + ["linux"]
@@ -42,95 +27,51 @@ SCREENS = [
 ]
 
 
-def proxy_entries():
-    return [
-        line.strip()
-        for line in CONF.read_text().splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+def camou_config(env):
+    """Decode the CAMOU_CONFIG_* chunks of a persona env back into one dict."""
+    chunks = "".join(v for k, v in sorted(env.items()) if k.startswith("CAMOU_CONFIG_"))
+    return json.loads(chunks) if chunks else {}
 
 
-def generate_personas(count, entries=None, progress=None):
-    """Write one persona.env per profiles/idN dir; returns log lines.
+def generate_persona(index, proxy):
+    """Build the CAMOU_* env for identity `index` (0-based); returns (env, log_lines).
 
-    entries overrides the proxy list (core passes ['DIRECT'] when the
-    proxy toggle is off, which skips all through-the-proxy GeoIP lookups).
+    proxy is a proxies.conf entry ('host:port' or 'DIRECT').
     """
     from browserforge.fingerprints import Screen
     from camoufox.utils import launch_options
 
-    if not 1 <= count <= 100:
-        raise ValueError(f"identity count must be 1-100 (got {count})")
-
-    entries = proxy_entries() if entries is None else entries
-    if not entries:
-        raise RuntimeError("proxies.conf has no entries")
-
+    ident = f"id{index + 1}"
     lines = []
-    for i in range(count):
-        ident = f"id{i + 1}"
-        if progress:
-            progress(f"Creating identity {i + 1}/{count}", i + 1, count)
-        out = PROFILES / ident / "persona.env"
-        if not out.parent.is_dir():
-            raise RuntimeError(f"{out.parent} missing — run create first")
+    os_persona = OS_PERSONAS[index % len(OS_PERSONAS)]
+    w, h = SCREENS[index % len(SCREENS)]
+    kwargs = {
+        "os": os_persona,
+        "screen": Screen(min_width=1024, max_width=w, min_height=700, max_height=h),
+        "block_webrtc": True,
+        "i_know_what_im_doing": True,
+    }
+    if proxy == "DIRECT":
+        lines.append(f"{ident}: DIRECT — no GeoIP lookup, timezone will not match an exit IP")
+    else:
+        kwargs["proxy"] = {"server": f"socks5://{proxy}"}
+        kwargs["geoip"] = True  # looked up *through* the proxy
 
-        os_persona = OS_PERSONAS[i % len(OS_PERSONAS)]
-        w, h = SCREENS[i % len(SCREENS)]
-        kwargs = {
-            "os": os_persona,
-            "screen": Screen(min_width=1024, max_width=w, min_height=700, max_height=h),
-            "block_webrtc": True,
-            "i_know_what_im_doing": True,
-        }
-        entry = entries[i % len(entries)]
-        if entry == "DIRECT":
-            lines.append(f"{ident}: DIRECT — no GeoIP lookup, timezone will not match an exit IP")
-        else:
-            kwargs["proxy"] = {"server": f"socks5://{entry}"}
-            kwargs["geoip"] = True  # looked up *through* the proxy
-
-        try:
-            opts = launch_options(**kwargs)
-        except Exception as exc:  # proxy down, GeoIP DB missing, etc.
-            if "geoip" not in kwargs:
-                raise
-            lines.append(f"{ident}: GeoIP lookup failed ({exc}); falling back to random locale")
-            del kwargs["geoip"]
-            opts = launch_options(**kwargs)
-
-        # env additions the launcher would have set (CAMOU_CONFIG_* chunks etc.)
-        added = {
-            k: str(v)
-            for k, v in opts["env"].items()
-            if k.startswith("CAMOU_")
-        }
-        if not added:
-            raise RuntimeError(f"no CAMOU_CONFIG generated for {ident}")
-
-        with out.open("w") as fh:
-            for key, value in sorted(added.items()):
-                fh.write(f"export {key}={shlex.quote(value)}\n")
-
-        cfg = json.loads("".join(v for k, v in sorted(added.items()) if k.startswith("CAMOU_CONFIG_")))
-        ua = cfg.get("navigator.userAgent", "?")
-        tz = cfg.get("timezone", cfg.get("int:timezone", "?"))
-        lines.append(f"{ident}: {os_persona:7s} tz={tz}  ua=...{ua[-40:]}")
-
-    lines.append(f"{count} personas written to {PROFILES}/idN/persona.env")
-    return lines
-
-
-def main():
-    count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-    if not 1 <= count <= 100:
-        sys.exit(f"error: identity count must be 1-100 (got {count})")
     try:
-        for line in generate_personas(count):
-            print(line)
-    except (RuntimeError, ValueError) as exc:
-        sys.exit(f"error: {exc}")
+        opts = launch_options(**kwargs)
+    except Exception as exc:  # proxy down, GeoIP DB missing, etc.
+        if "geoip" not in kwargs:
+            raise
+        lines.append(f"{ident}: GeoIP lookup failed ({exc}); falling back to random locale")
+        del kwargs["geoip"]
+        opts = launch_options(**kwargs)
 
+    env = {k: str(v) for k, v in opts["env"].items() if k.startswith("CAMOU_")}
+    if not env:
+        raise RuntimeError(f"no CAMOU_CONFIG generated for {ident}")
 
-if __name__ == "__main__":
-    main()
+    cfg = camou_config(env)
+    ua = cfg.get("navigator.userAgent", "?")
+    tz = cfg.get("timezone", cfg.get("int:timezone", "?"))
+    lines.append(f"{ident}: {os_persona:7s} tz={tz}  ua=...{ua[-40:]}")
+    return env, lines

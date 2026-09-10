@@ -88,8 +88,7 @@
   .tile header .id { color: #f0f6fc; font-weight: 600; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .dot.running { background: #3fb950; }
-  .dot.exited { background: #8b949e; }
-  .dot.untracked { background: #d29922; }
+  .dot.stopped { background: #8b949e; }
   .shot {
     width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block;
     background: #0d1117; border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
@@ -314,22 +313,18 @@ function render(state) {
 
   // rebuild the grid only when the identity set or run-states change
   const sig = JSON.stringify(state.identities.map(i =>
-    [i.id, i.controlled, i.running, i.proxy, i.os, i.tz, i.ua_tail]));
+    [i.id, i.controlled, i.proxy, i.os, i.tz, i.ua_tail]));
   if (sig !== lastSig) {
     lastSig = sig;
     $("grid").innerHTML = state.identities.map(i => {
-      let cls, label;
-      if (i.controlled)        { cls = "running";   label = "controlled"; }
-      else if (i.running)      { cls = "running";   label = "running"; }
-      else if (i.tracked)      { cls = "exited";    label = "exited"; }
-      else                     { cls = "untracked"; label = "untracked"; }
+      const cls = i.controlled ? "running" : "stopped";
       const view = i.controlled
         ? `<img class="shot" data-shot="${esc(i.id)}" alt="">`
-        : `<div class="noshot">no live view<br>(${label})</div>`;
+        : `<div class="noshot">no live view<br>(${cls})</div>`;
       return `<div class="tile${i.controlled ? " live" : ""}" data-focus="${esc(i.id)}"
         title="${i.controlled ? "click to focus this window" : ""}">
         <header><span class="id">${esc(i.id)}</span>
-          <span><span class="dot ${cls}"></span> ${label}</span></header>
+          <span><span class="dot ${cls}"></span> ${cls}</span></header>
         ${view}
         <footer>${esc(i.proxy)} · ${esc(i.os)} · ${esc(i.tz)}<br>…${esc(i.ua_tail)}</footer>
       </div>`;
