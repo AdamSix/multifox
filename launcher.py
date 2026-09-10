@@ -120,6 +120,7 @@ class Launcher:
     def _worker(self):
         try:
             self._setup_runtime_dir()
+            self._request_accessibility()
             self._ensure_browser()
             self._update_browser()
             self._start_dashboard()
@@ -129,6 +130,20 @@ class Launcher:
 
             self.log_line(traceback.format_exc().rstrip())
             self.set_status("startup failed — see log")
+
+    def _request_accessibility(self):
+        """macOS: window focusing needs Accessibility access; prompt at startup."""
+        if sys.platform != "darwin":
+            return
+        import controller
+
+        if controller.accessibility_trusted():
+            return
+        controller.accessibility_trusted(prompt=True)
+        self.log_line(
+            "tile-click window focusing needs Accessibility access — approve the "
+            "system prompt (or later: System Settings → Privacy & Security → Accessibility)"
+        )
 
     def _setup_runtime_dir(self):
         HOME.mkdir(parents=True, exist_ok=True)

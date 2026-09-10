@@ -71,8 +71,11 @@ downloads the browser. It takes a few minutes and is safe to re-run.
 
 Then open http://multifox.localhost:8787 (plain http://127.0.0.1:8787 works
 too) — create identities, launch them, and watch live screenshots of every
-window from one page. Keep the dashboard running for the whole session;
-quitting it closes the browser windows it launched.
+window from one page. Click a tile to bring that identity's window to the
+front; on macOS this needs Accessibility access — the app prompts for it on
+startup (and again on your first tile click), or enable it manually in System
+Settings → Privacy & Security → Accessibility. Keep the dashboard running for
+the whole session; quitting it closes the browser windows it launched.
 
 ### Configure proxies
 

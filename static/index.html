@@ -79,6 +79,8 @@
     background: #161b22; border: 1px solid #30363d; border-radius: 8px;
     overflow: hidden; display: flex; flex-direction: column;
   }
+  .tile.live { cursor: pointer; }
+  .tile.live:hover { border-color: #58a6ff; }
   .tile header {
     display: flex; justify-content: space-between; align-items: center;
     padding: 6px 10px; font-size: 13px;
@@ -216,6 +218,20 @@ $("stop").onclick = () => {
 $("proxytoggle").onchange = () => api("/api/proxies", {enabled: $("proxytoggle").checked});
 $("openlog").onclick = () => api("/api/open-log");
 
+// click a live tile to bring its browser window to the front
+$("grid").addEventListener("click", async (e) => {
+  const tile = e.target.closest(".tile.live");
+  if (!tile) return;
+  const res = await fetch("/api/focus", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id: tile.dataset.focus}),
+  });
+  const data = await res.json();
+  if (!res.ok) alert(data.error || res.statusText);
+  else if (data.detail && data.detail.startsWith("warning:")) alert(data.detail);
+});
+
 const overlay = $("modal-overlay");
 $("proxyedit").onclick = async () => {
   const res = await fetch("/api/proxies/conf");
@@ -309,7 +325,8 @@ function render(state) {
       const view = i.controlled
         ? `<img class="shot" data-shot="${esc(i.id)}" alt="">`
         : `<div class="noshot">no live view<br>(${label})</div>`;
-      return `<div class="tile">
+      return `<div class="tile${i.controlled ? " live" : ""}" data-focus="${esc(i.id)}"
+        title="${i.controlled ? "click to focus this window" : ""}">
         <header><span class="id">${esc(i.id)}</span>
           <span><span class="dot ${cls}"></span> ${label}</span></header>
         ${view}

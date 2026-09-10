@@ -38,6 +38,16 @@ _jobs_lock = threading.Lock()
 _job_seq = 0
 
 _freshness = {}
+_ax_prompted = False
+
+
+def _request_accessibility_once():
+    """macOS: show the Accessibility grant prompt at most once per process."""
+    global _ax_prompted
+    if _ax_prompted:
+        return
+    _ax_prompted = True
+    controller.accessibility_trusted(prompt=True)
 
 
 def _freshness_worker():
@@ -239,6 +249,25 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif self.path == "/api/stop":
             job, err = _start_job("stop", _stop_all)
+        elif self.path == "/api/focus":
+            ident = body.get("id")
+            if controller._instance is None:
+                self._send_json({"error": "no running sessions"}, 404)
+                return
+            try:
+                detail = controller.get_controller().focus(ident)
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, 404)
+                return
+            if sys.platform == "darwin" and not controller.accessibility_trusted():
+                _request_accessibility_once()
+                detail = (
+                    "warning: window focus needs Accessibility access — approve the "
+                    "system prompt, or enable it in System Settings → Privacy & "
+                    "Security → Accessibility, then click the tile again"
+                )
+            self._send_json({"ok": True, "detail": detail})
+            return
         elif self.path == "/api/proxies":
             ffid_core.set_proxies_enabled(bool(body.get("enabled", True)))
             self._send_json({"proxies_enabled": ffid_core.proxies_enabled()})

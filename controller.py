@@ -13,6 +13,10 @@ The controller must outlive the sessions: closing it closes the browsers.
 import os
 import queue
 import random
+import re
+import shutil
+import subprocess
+import sys
 import threading
 import time
 
@@ -20,6 +24,91 @@ import ffid_core
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
+
+
+def accessibility_trusted(prompt=False):
+    """macOS: is this process Accessibility-trusted? Always True on other OSes.
+
+    prompt=True asks macOS to show the system grant dialog (shown only once per
+    app; after that the user must toggle it manually in System Settings).
+    """
+    if sys.platform != "darwin":
+        return True
+    import ctypes
+
+    his = ctypes.CDLL(
+        "/System/Library/Frameworks/ApplicationServices.framework"
+        "/Frameworks/HIServices.framework/HIServices"
+    )
+    if not prompt:
+        return bool(his.AXIsProcessTrusted())
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    key = ctypes.c_void_p.in_dll(his, "kAXTrustedCheckOptionPrompt").value
+    val = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue").value
+    keys = (ctypes.c_void_p * 1)(key)
+    values = (ctypes.c_void_p * 1)(val)
+    cf.CFDictionaryCreate.restype = ctypes.c_void_p
+    options = cf.CFDictionaryCreate(
+        None, keys, values, 1,
+        ctypes.byref(ctypes.c_char.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")),
+        ctypes.byref(ctypes.c_char.in_dll(cf, "kCFTypeDictionaryValueCallBacks")),
+    )
+    his.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
+    his.AXIsProcessTrustedWithOptions.argtypes = [ctypes.c_void_p]
+    return bool(his.AXIsProcessTrustedWithOptions(options))
+
+
+def _pids_for_profile(profile_dir):
+    """PIDs of processes whose command line mentions this profile dir, oldest first.
+
+    The path is followed by whitespace or end-of-line so id1 doesn't match id10.
+    (POSIX character class: pgrep regexes don't support \\s.)
+    """
+    pattern = re.escape(str(profile_dir)) + r"([[:space:]]|$)"
+    out = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True).stdout
+    return sorted(int(p) for p in out.split() if p.strip().isdigit())
+
+
+def _raise_os_window(profile_dir):
+    """Best effort: bring the OS window owning this profile to the front.
+
+    Returns a detail string; a leading "warning:" means the raise failed.
+    """
+    if sys.platform == "darwin":
+        for pid in _pids_for_profile(profile_dir):
+            r = subprocess.run(
+                [
+                    "osascript", "-e",
+                    'tell application "System Events" to set frontmost of '
+                    f"first process whose unix id is {pid} to true",
+                ],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                return f"raised pid {pid}"
+        return (
+            "warning: could not raise the window — grant Accessibility access to "
+            "the app running the dashboard (System Settings → Privacy & Security "
+            "→ Accessibility)"
+        )
+    if sys.platform == "win32":
+        ps = (
+            "$p = Get-CimInstance Win32_Process -Filter \"Name='camoufox.exe'\" |"
+            f" Where-Object {{ $_.CommandLine -match [regex]::Escape('{profile_dir}') + '[\" ]' }} |"
+            " Sort-Object ProcessId | Select-Object -First 1;"
+            " if ($p) { (New-Object -ComObject WScript.Shell).AppActivate($p.ProcessId) | Out-Null }"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
+        return "focus requested"
+    if shutil.which("xdotool"):
+        for pid in _pids_for_profile(profile_dir):
+            out = subprocess.run(
+                ["xdotool", "search", "--pid", str(pid)], capture_output=True, text=True
+            ).stdout.split()
+            if out:
+                subprocess.run(["xdotool", "windowactivate", out[-1]], capture_output=True)
+                return f"raised pid {pid}"
+    return "warning: no window-raise tool available (install xdotool)"
 
 
 class Controller:
@@ -122,6 +211,16 @@ class Controller:
         entry["shot"] = (time.time(), data)
         return data
 
+    def _cmd_focus(self, ident):
+        entry = self._contexts.get(ident)
+        if entry is None:
+            raise RuntimeError(f"{ident} is not controlled — no window to focus")
+        try:
+            entry["page"].bring_to_front()
+        except Exception:
+            pass  # page may be closed; the OS raise below is the important part
+        return _raise_os_window(ffid_core.PROFILES / ident)
+
     def _cmd_reload(self, url, log, progress=None):
         if not self._contexts:
             raise RuntimeError("no controlled sessions to reload")
@@ -163,6 +262,9 @@ class Controller:
 
     def screenshot(self, ident):
         return self._dispatch("screenshot", ident)
+
+    def focus(self, ident):
+        return self._dispatch("focus", ident)
 
     def reload(self, url, log, progress=None):
         return self._dispatch("reload", url, log, progress, timeout=600)
