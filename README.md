@@ -10,6 +10,22 @@ screen, timezone, locale, …).
 Identities are disposable: **Stop** kills every window and deletes all
 profiles, so nothing (cookies, history, logins) survives between sessions.
 
+**How it works.** Press Start and multifox generates N personas (a realistic
+OS / hardware / locale mix from BrowserForge data), writes each one into its
+own profile directory, and launches N headed Camoufox windows under
+[Playwright](https://playwright.dev) control. A local dashboard shows a live
+screenshot of every window; click a tile to bring that window to the front.
+Because the browsers are driven by Playwright, the same setup can later be
+scripted (navigate, read, fill) across all identities at once.
+
+<p align="center"><img src="packaging/dashboard.png" alt="multifox dashboard showing six running identities with live screenshots" width="800"></p>
+
+**What it's for.** Testing how a site behaves for many distinct visitors at
+the same time — anti-bot and fingerprinting checks, A/B and geo-targeting
+QA, multi-account test setups, or simply keeping several logins open without
+them sharing cookies or a fingerprint. Use it only on sites and accounts you
+are allowed to test.
+
 By default every identity connects directly, with no proxy. Per-identity
 SOCKS5 exit IPs (with GeoIP-matched timezone/locale) are an **experimental,
 untested** feature — leave proxies off for now. See
