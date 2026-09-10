@@ -22,6 +22,10 @@ jobs:
           - runs-on: macos-15-intel # Intel (x86_64); macos-13 retired Dec 2025
             asset: multifox-macos-x86_64.zip
     runs-on: ${{ matrix.runs-on }}
+    env:
+      # camoufox fetch hits the GitHub releases API; authenticate to avoid
+      # the flaky unauthenticated rate limit on shared runner IPs
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,6 +47,8 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

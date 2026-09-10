@@ -38,6 +38,14 @@ def main():
     run([str(py), "-m", "pip", "install", "--upgrade", "camoufox[geoip]"])
     run([str(py), "-m", "camoufox", "set", "official/stable"])
     run([str(py), "-m", "camoufox", "fetch"])
+    # camoufox fetch exits 0 even when it synced nothing (e.g. GitHub API rate
+    # limit) — verify the browser actually landed
+    check = subprocess.run(
+        [str(py), "-c", "from camoufox.pkgman import installed_verstr; installed_verstr()"],
+        capture_output=True,
+    )
+    if check.returncode:
+        sys.exit("error: camoufox browser did not install (see fetch output above)")
     print()
     print("install complete. Next steps:")
     print("  1. edit proxies.conf — one SOCKS5 host:port per line (see the comments in the file)")
