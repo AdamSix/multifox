@@ -70,7 +70,7 @@ class Controller:
         if not idents:
             raise RuntimeError("no profiles found — run create first")
         ff = ffid_core.browser_path()
-        entries = ffid_core.proxy_entries()
+        entries = ffid_core.effective_entries()
         launched = 0
         for ident in idents:
             if ident in self._contexts:

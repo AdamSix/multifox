@@ -176,6 +176,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif self.path == "/api/stop":
             job, err = _start_job("stop", _stop_all)
+        elif self.path == "/api/proxies":
+            ffid_core.set_proxies_enabled(bool(body.get("enabled", True)))
+            self._send_json({"proxies_enabled": ffid_core.proxies_enabled()})
+            return
         elif self.path == "/api/update":
             job, err = _start_job("update", _update_all)
         else:

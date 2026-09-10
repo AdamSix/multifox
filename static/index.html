@@ -80,6 +80,7 @@
 <div class="controls">
   <label>count <input id="count" type="number" min="1" max="100" value="10"></label>
   <label>url <input id="url" type="text" value="https://browserleaks.com/ip"></label>
+  <label title="off = every identity uses your real IP"><input id="proxytoggle" type="checkbox" checked> proxies</label>
   <button id="create">Create</button>
   <button id="launch">Launch</button>
   <button id="stop" class="danger">Stop &amp; wipe</button>
@@ -120,12 +121,16 @@ $("stop").onclick = () => {
   if (confirm("Kill all identity instances and DELETE the profiles?")) api("/api/stop");
 };
 $("update").onclick = () => api("/api/update");
+$("proxytoggle").onchange = () => api("/api/proxies", {enabled: $("proxytoggle").checked});
 
 function esc(s) { return String(s ?? "?").replace(/</g, "&lt;"); }
 
 function render(state) {
-  $("proxies").textContent =
-    `${state.proxy_entries} proxies configured (${state.direct_entries} DIRECT)`;
+  $("proxytoggle").checked = !!state.proxies_enabled;
+  $("proxies").textContent = state.proxies_enabled
+    ? `${state.proxy_entries} proxies configured (${state.direct_entries} DIRECT)`
+    : "proxies off — everything uses your real IP";
+  $("proxies").style.color = state.proxies_enabled ? "" : "#d29922";
 
   const f = state.freshness || {};
   const stale = [];

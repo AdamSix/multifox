@@ -50,15 +50,19 @@ def proxy_entries():
     ]
 
 
-def generate_personas(count):
-    """Write one persona.env per profiles/idN dir; returns log lines."""
+def generate_personas(count, entries=None):
+    """Write one persona.env per profiles/idN dir; returns log lines.
+
+    entries overrides the proxy list (ffid_core passes ['DIRECT'] when the
+    proxy toggle is off, which skips all through-the-proxy GeoIP lookups).
+    """
     from browserforge.fingerprints import Screen
     from camoufox.utils import launch_options
 
     if not 1 <= count <= 100:
         raise ValueError(f"identity count must be 1-100 (got {count})")
 
-    entries = proxy_entries()
+    entries = proxy_entries() if entries is None else entries
     if not entries:
         raise RuntimeError("proxies.conf has no entries")
 

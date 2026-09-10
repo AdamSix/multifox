@@ -28,6 +28,26 @@ from gen_personas import generate_personas, proxy_entries
 # Runtime data (proxies.conf, profiles/) lives here. Defaults to the project
 # directory; the packaged app sets FFID_HOME to a per-user data dir.
 ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent)
+SETTINGS = ROOT / "settings.json"
+
+
+def proxies_enabled():
+    """Global proxy toggle (dashboard UI). Off = every identity goes DIRECT."""
+    try:
+        return bool(json.loads(SETTINGS.read_text()).get("proxies", True))
+    except (OSError, ValueError):
+        return True
+
+
+def set_proxies_enabled(enabled):
+    SETTINGS.write_text(json.dumps({"proxies": bool(enabled)}) + "\n")
+
+
+def effective_entries():
+    """Proxy entries actually in effect: ['DIRECT'] for all when toggled off."""
+    if not proxies_enabled():
+        return ["DIRECT"]
+    return proxy_entries()
 CONF = ROOT / "proxies.conf"
 PROFILES = ROOT / "profiles"
 MAX_SESSIONS = 100
@@ -214,11 +234,14 @@ def write_user_js(profile_dir, index, entry):
 def create_profiles(count, log=print):
     if not 1 <= count <= MAX_SESSIONS:
         raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {count})")
-    entries = proxy_entries()
+    entries = effective_entries()
     if not entries:
         raise RuntimeError(f"{CONF} has no proxy entries")
-    if count > len(entries):
-        log(f"warning: {len(entries)} proxies for {count} identities — egresses repeat (shared IPs link identities)")
+    if proxies_enabled():
+        if count > len(entries):
+            log(f"warning: {len(entries)} proxies for {count} identities — egresses repeat (shared IPs link identities)")
+    else:
+        log("proxies disabled — every identity connects DIRECTLY (your real IP)")
     # clear any previous set so a smaller count doesn't leave stale profiles behind
     if PROFILES.is_dir() and PROFILES == ROOT / "profiles":
         shutil.rmtree(PROFILES)
@@ -226,13 +249,13 @@ def create_profiles(count, log=print):
     for i in range(count):
         ident = f"id{i + 1}"
         entry = entries[i % len(entries)]
-        if entry == "DIRECT":
+        if entry == "DIRECT" and proxies_enabled():
             log(f"warning: {ident} will connect DIRECTLY (your real IP)")
         profile_dir = PROFILES / ident
         profile_dir.mkdir(parents=True, exist_ok=True)
         write_user_js(profile_dir, i, entry)
-    # one Camoufox persona per identity (does GeoIP lookups through the proxies)
-    for line in generate_personas(count):
+    # one Camoufox persona per identity (GeoIP lookups through the proxies, if any)
+    for line in generate_personas(count, entries):
         log(line)
     log(f"Done. {count} profiles created.")
 
@@ -331,7 +354,8 @@ def _persona_summary(profile_dir):
 
 
 def status():
-    entries = proxy_entries() if CONF.is_file() else []
+    raw = proxy_entries() if CONF.is_file() else []
+    entries = effective_entries() if CONF.is_file() else []
     identities = []
     for ident in existing_idents():
         index = int(ident[2:])
@@ -350,7 +374,8 @@ def status():
             }
         )
     return {
-        "proxy_entries": len(entries),
-        "direct_entries": sum(1 for e in entries if e == "DIRECT"),
+        "proxy_entries": len(raw),
+        "direct_entries": sum(1 for e in raw if e == "DIRECT"),
+        "proxies_enabled": proxies_enabled(),
         "identities": identities,
     }
