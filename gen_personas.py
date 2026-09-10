@@ -26,9 +26,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CONF = ROOT / "proxies.conf"
 PROFILES = ROOT / "profiles"
-N = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-if not 1 <= N <= 100:
-    sys.exit(f"error: identity count must be 1-100 (got {N})")
 
 # OS mix roughly matching real-world desktop market share.
 OS_PERSONAS = ["windows"] * 7 + ["macos"] * 2 + ["linux"]
@@ -51,19 +48,24 @@ def proxy_entries():
     ]
 
 
-def main():
+def generate_personas(count):
+    """Write one persona.env per profiles/idN dir; returns log lines."""
     from browserforge.fingerprints import Screen
     from camoufox.utils import launch_options
 
+    if not 1 <= count <= 100:
+        raise ValueError(f"identity count must be 1-100 (got {count})")
+
     entries = proxy_entries()
     if not entries:
-        sys.exit("error: proxies.conf has no entries")
+        raise RuntimeError("proxies.conf has no entries")
 
-    for i in range(N):
+    lines = []
+    for i in range(count):
         ident = f"id{i + 1}"
         out = PROFILES / ident / "persona.env"
         if not out.parent.is_dir():
-            sys.exit(f"error: {out.parent} missing — run create first")
+            raise RuntimeError(f"{out.parent} missing — run create first")
 
         os_persona = OS_PERSONAS[i % len(OS_PERSONAS)]
         w, h = SCREENS[i % len(SCREENS)]
@@ -75,7 +77,7 @@ def main():
         }
         entry = entries[i % len(entries)]
         if entry == "DIRECT":
-            print(f"{ident}: DIRECT — no GeoIP lookup, timezone will not match an exit IP")
+            lines.append(f"{ident}: DIRECT — no GeoIP lookup, timezone will not match an exit IP")
         else:
             kwargs["proxy"] = {"server": f"socks5://{entry}"}
             kwargs["geoip"] = True  # looked up *through* the proxy
@@ -85,7 +87,7 @@ def main():
         except Exception as exc:  # proxy down, GeoIP DB missing, etc.
             if "geoip" not in kwargs:
                 raise
-            print(f"{ident}: GeoIP lookup failed ({exc}); falling back to random locale")
+            lines.append(f"{ident}: GeoIP lookup failed ({exc}); falling back to random locale")
             del kwargs["geoip"]
             opts = launch_options(**kwargs)
 
@@ -96,7 +98,7 @@ def main():
             if k.startswith("CAMOU_")
         }
         if not added:
-            sys.exit(f"error: no CAMOU_CONFIG generated for {ident}")
+            raise RuntimeError(f"no CAMOU_CONFIG generated for {ident}")
 
         with out.open("w") as fh:
             for key, value in sorted(added.items()):
@@ -105,9 +107,21 @@ def main():
         cfg = json.loads("".join(v for k, v in sorted(added.items()) if k.startswith("CAMOU_CONFIG_")))
         ua = cfg.get("navigator.userAgent", "?")
         tz = cfg.get("timezone", cfg.get("int:timezone", "?"))
-        print(f"{ident}: {os_persona:7s} tz={tz}  ua=...{ua[-40:]}")
+        lines.append(f"{ident}: {os_persona:7s} tz={tz}  ua=...{ua[-40:]}")
 
-    print(f"\n{N} personas written to {PROFILES}/idN/persona.env")
+    lines.append(f"{count} personas written to {PROFILES}/idN/persona.env")
+    return lines
+
+
+def main():
+    count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    if not 1 <= count <= 100:
+        sys.exit(f"error: identity count must be 1-100 (got {count})")
+    try:
+        for line in generate_personas(count):
+            print(line)
+    except (RuntimeError, ValueError) as exc:
+        sys.exit(f"error: {exc}")
 
 
 if __name__ == "__main__":

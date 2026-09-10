@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ff-sessions</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: #0d1117; color: #c9d1d9;
+    font: 14px/1.5 -apple-system, "SF Mono", Menlo, monospace;
+  }
+  h1 { font-size: 18px; margin: 0 0 16px; color: #f0f6fc; }
+  h1 span { color: #8b949e; font-weight: normal; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 12px; background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  }
+  input {
+    background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 10px; font: inherit;
+  }
+  #count { width: 70px; }
+  #url { width: 320px; }
+  button {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 14px; font: inherit; cursor: pointer;
+  }
+  button:hover { background: #30363d; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.danger { color: #f85149; }
+  #job {
+    margin: 16px 0; padding: 12px; background: #161b22;
+    border: 1px solid #30363d; border-radius: 8px; white-space: pre-wrap;
+    font-size: 13px; max-height: 220px; overflow-y: auto; display: none;
+  }
+  #job .running { color: #d29922; }
+  #job .done { color: #3fb950; }
+  #job .error { color: #f85149; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: normal; }
+  .state-running { color: #3fb950; }
+  .state-stopped { color: #8b949e; }
+  .state-untracked { color: #d29922; }
+  .empty { color: #8b949e; padding: 24px 0; text-align: center; }
+  footer { margin-top: 24px; color: #6e7681; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>ff-sessions <span>— isolated Camoufox identities</span></h1>
+
+<div class="controls">
+  <label>count <input id="count" type="number" min="1" max="100" value="10"></label>
+  <label>url <input id="url" type="text" value="https://browserleaks.com/ip"></label>
+  <button id="create">Create</button>
+  <button id="launch">Launch</button>
+  <button id="stop" class="danger">Stop &amp; wipe</button>
+  <span id="proxies"></span>
+</div>
+
+<div id="job"></div>
+
+<table>
+  <thead>
+    <tr><th>id</th><th>proxy</th><th>os</th><th>timezone</th><th>user agent</th><th>pid</th><th>state</th></tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty">no profiles — Create a set to begin</div>
+
+<footer>
+  Identities launched from this dashboard are tracked directly. Ones launched
+  via ffid.sh show as “untracked”. Stop kills tracked instances and deletes
+  all profiles.
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json();
+  if (!res.ok) alert(data.error || res.statusText);
+  refresh();
+}
+
+$("create").onclick = () => api("/api/create", {count: +$("count").value});
+$("launch").onclick = () => api("/api/launch", {url: $("url").value});
+$("stop").onclick = () => {
+  if (confirm("Kill all identity instances and DELETE the profiles?")) api("/api/stop");
+};
+
+function render(state) {
+  $("proxies").textContent =
+    `${state.proxy_entries} proxies configured (${state.direct_entries} DIRECT)`;
+
+  const job = [...(state.jobs || [])].reverse().find(j => j.status === "running") ||
+              (state.jobs || [])[state.jobs.length - 1];
+  const jobEl = $("job");
+  if (job) {
+    jobEl.style.display = "block";
+    jobEl.innerHTML =
+      `<span class="${job.status}">● ${job.kind} — ${job.status}</span>\n` +
+      job.log.map(l => l.replace(/</g, "&lt;")).join("\n");
+    jobEl.scrollTop = jobEl.scrollHeight;
+  } else {
+    jobEl.style.display = "none";
+  }
+
+  const busy = (state.jobs || []).some(j => j.status === "running");
+  $("create").disabled = busy;
+  $("launch").disabled = busy;
+  $("stop").disabled = busy;
+
+  const rows = state.identities.map(i => {
+    let stateText, cls;
+    if (i.tracked && i.running)      { stateText = "running";   cls = "state-running"; }
+    else if (i.tracked)              { stateText = "exited";    cls = "state-stopped"; }
+    else if (i.running === null)     { stateText = "untracked"; cls = "state-untracked"; }
+    else                             { stateText = "stopped";   cls = "state-stopped"; }
+    return `<tr>
+      <td>${i.id}</td><td>${i.proxy}</td><td>${i.os || "?"}</td>
+      <td>${i.tz || "?"}</td><td>…${i.ua_tail || "?"}</td>
+      <td>${i.pid || "—"}</td><td class="${cls}">${stateText}</td>
+    </tr>`;
+  }).join("");
+  $("rows").innerHTML = rows;
+  $("empty").style.display = state.identities.length ? "none" : "block";
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/state");
+    render(await res.json());
+  } catch (e) { /* server restarting */ }
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
