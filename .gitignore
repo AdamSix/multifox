@@ -1,0 +1,4 @@
+.venv/
+profiles/
+__pycache__/
+.DS_Store
