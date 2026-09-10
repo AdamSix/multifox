@@ -55,6 +55,26 @@ The dashboard checks on startup and shows an amber warning when the Camoufox
 browser or python package is behind the latest release. Click **Update
 camoufox** in the dashboard, or run `./ffid.sh update`.
 
+## Desktop app
+
+A double-clickable desktop app (no command line needed) can be built with
+PyInstaller:
+
+```sh
+./build_app.sh        # produces dist/ff-sessions.app and dist/ff-sessions.zip
+```
+
+The app shows a small launcher window: on first run it downloads the Camoufox
+browser, then starts the dashboard and presents an **Open dashboard** button.
+Quitting the window stops all sessions. Runtime data (proxies.conf, profiles/)
+lives in `~/Library/Application Support/ff-sessions` (respectively
+`%APPDATA%\ff-sessions` on Windows).
+
+Architecture: the build matches the machine it runs on — build on an Apple
+Silicon Mac for arm64, on an Intel Mac for x86_64. The app is unsigned, so on
+another Mac: right-click → Open the first time (or
+`xattr -dr com.apple.quarantine /path/to/ff-sessions.app`).
+
 ## CLI usage (macOS/Linux)
 
 The dashboard covers the common workflow, but everything is also available as

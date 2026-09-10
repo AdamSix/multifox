@@ -14,6 +14,7 @@ the browser windows. (For detached fire-and-forget windows, use ffid.sh.)
 
 import atexit
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,8 +23,8 @@ from pathlib import Path
 import controller
 import ffid_core
 
-ROOT = Path(__file__).resolve().parent
-STATIC = ROOT / "static"
+# When frozen by PyInstaller, static assets live in the bundle (_MEIPASS).
+STATIC = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "static"
 HOST = "127.0.0.1"
 PORT = 8787
 

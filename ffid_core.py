@@ -25,7 +25,9 @@ from pathlib import Path
 
 from gen_personas import generate_personas, proxy_entries
 
-ROOT = Path(__file__).resolve().parent
+# Runtime data (proxies.conf, profiles/) lives here. Defaults to the project
+# directory; the packaged app sets FFID_HOME to a per-user data dir.
+ROOT = Path(os.environ.get("FFID_HOME") or Path(__file__).resolve().parent)
 CONF = ROOT / "proxies.conf"
 PROFILES = ROOT / "profiles"
 MAX_SESSIONS = 100
