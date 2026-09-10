@@ -12,6 +12,15 @@ datas = [("static", "static"), ("proxies.conf", ".")]
 binaries = []
 hiddenimports = []
 
+# bundled Camoufox browser + GeoIP DB + addons as a zip, staged by
+# build_app.sh so the app installs offline with no first-run download.
+# (shipped as a zip so PyInstaller treats the browser's dylibs as opaque
+# data instead of trying to rewrite their rpaths)
+import os.path
+
+if os.path.isfile("build/bundle_payload.zip"):
+    datas.append(("build/bundle_payload.zip", "bundle_payload"))
+
 # packages with data files / native drivers that static analysis misses
 for pkg in (
     "playwright",                  # node driver bundle

@@ -17,6 +17,7 @@ the project directory otherwise.
 import os
 import queue
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -143,9 +144,40 @@ class Launcher:
 
         try:
             self.log_line(f"camoufox browser {installed_verstr()} installed")
+            self._ensure_mmdb()
             return
         except CamoufoxNotInstalled:
             pass
+
+        # preferred path: unpack the browser bundled inside the app (offline)
+        payload_zip = BUNDLE / "bundle_payload" / "bundle_payload.zip"
+        if payload_zip.is_file():
+            import zipfile
+
+            from camoufox.pkgman import INSTALL_DIR
+
+            self.set_status("installing bundled camoufox browser…")
+            self.log_line("installing bundled camoufox browser (one-time unpack)…")
+            try:
+                INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+                if shutil.which("ditto"):
+                    # preserves permissions exactly (zipfile drops the +x bit)
+                    subprocess.run(
+                        ["ditto", "-x", "-k", str(payload_zip), str(INSTALL_DIR)], check=True
+                    )
+                else:
+                    with zipfile.ZipFile(payload_zip) as zf:
+                        for info in zf.infolist():
+                            dest = zf.extract(info, INSTALL_DIR)
+                            mode = info.external_attr >> 16
+                            if mode:
+                                os.chmod(dest, mode)
+                self.log_line(f"camoufox browser {installed_verstr()} installed")
+                self._ensure_mmdb()
+                return
+            except Exception as exc:
+                self.log_line(f"warning: bundled install failed ({exc}); downloading instead")
+
         self.set_status("downloading camoufox browser (one-time, ~300MB)…")
         self.log_line("downloading camoufox browser — this only happens once…")
         from camoufox.pkgman import CamoufoxFetcher
@@ -154,13 +186,18 @@ class Launcher:
         fetcher.fetch_latest()
         fetcher.install()
         self.log_line("browser installed")
-        try:
-            from camoufox.geolocation import download_mmdb
+        self._ensure_mmdb()
 
+    def _ensure_mmdb(self):
+        try:
+            from camoufox.geolocation import GEOIP_DIR, download_mmdb
+
+            if GEOIP_DIR.exists() and any(GEOIP_DIR.iterdir()):
+                return
             download_mmdb()
             self.log_line("GeoIP database installed")
         except Exception as exc:
-            self.log_line(f"warning: GeoIP database download failed: {exc}")
+            self.log_line(f"warning: GeoIP database setup failed: {exc}")
 
     def _start_dashboard(self):
         import dashboard
