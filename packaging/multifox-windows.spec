@@ -34,6 +34,7 @@ for pkg in (
     "screeninfo",
     "language_tags",
     "ua_parser",
+    "webview",                     # pywebview: native dashboard window
 ):
     d, b, h = collect_all(pkg)
     datas += d

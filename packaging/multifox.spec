@@ -37,6 +37,7 @@ for pkg in (
     "screeninfo",
     "language_tags",
     "ua_parser",
+    "webview",                     # pywebview: native dashboard window
 ):
     d, b, h = collect_all(pkg)
     datas += d
@@ -80,10 +81,10 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="multifox.app",
-    icon=None,
+    icon=os.path.join(ROOT, "packaging/multifox.icns"),
     bundle_identifier="com.multifox.app",
     info_plist={
-        "CFBundleShortVersionString": "0.3.0",
+        "CFBundleShortVersionString": "0.4.0",
         "NSHighResolutionCapable": True,
     },
 )

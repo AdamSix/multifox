@@ -105,6 +105,7 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .empty { color: #8b949e; padding: 24px 0; text-align: center; }
+  .empty-note { display: inline-block; font-size: 12px; opacity: .75; margin-top: 6px; max-width: 420px; }
 
   /* pretty toggle switch */
   .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
@@ -194,7 +195,7 @@
 </div>
 
 <div id="grid"></div>
-<div id="empty" class="empty">no profiles — press Start to begin</div>
+<div id="empty" class="empty">no browsers — press Start to begin<br><span class="empty-note">each browser uses your computer's resources — the more you start, the heavier the load, so it's a good idea to close as much as possible first</span></div>
 
 <script>
 const $ = (id) => document.getElementById(id);

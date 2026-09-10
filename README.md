@@ -1,3 +1,5 @@
+<p align="center"><img src="packaging/social-preview.png" alt="multifox — many foxes, many browsers" width="640"></p>
+
 # multifox
 
 Run many isolated, fingerprint-spoofed browser sessions side by side. Each
@@ -28,8 +30,8 @@ Quick start:
 1. Unzip and launch. On macOS the app is unsigned, so right-click → **Open**
    the first time (or run
    `xattr -dr com.apple.quarantine /path/to/multifox.app`).
-2. First run unpacks the bundled Camoufox browser, starts the dashboard, and
-   shows an **Open dashboard** button (http://multifox.localhost:8787).
+2. First run unpacks the bundled Camoufox browser and starts the dashboard,
+   which opens right in the app window (no separate browser needed).
 3. Keep the app running for the whole session; quitting it closes the browser
    windows it launched. Click **Stop** in the dashboard to kill every window
    and wipe all profiles.
@@ -80,7 +82,7 @@ Silicon, Intel, and Windows apps and attaches the zips to a GitHub Release.
 To cut a release:
 
 ```sh
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 ## Proxies (experimental)

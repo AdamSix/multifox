@@ -7,3 +7,4 @@ dist/
 launcher.log
 dashboard.log
 settings.json
+packaging/multifox.iconset/

@@ -35,7 +35,7 @@ def main():
         print("creating virtualenv in .venv ...")
         run([sys.executable, "-m", "venv", str(VENV)])
     run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
-    run([str(py), "-m", "pip", "install", "--upgrade", "camoufox[geoip]"])
+    run([str(py), "-m", "pip", "install", "--upgrade", "camoufox[geoip]", "pywebview"])
     run([str(py), "-m", "camoufox", "set", "official/stable"])
     run([str(py), "-m", "camoufox", "fetch"])
     # camoufox fetch exits 0 even when it synced nothing (e.g. GitHub API rate
