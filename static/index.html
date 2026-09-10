@@ -34,19 +34,44 @@
   #job {
     margin: 16px 0; padding: 12px; background: #161b22;
     border: 1px solid #30363d; border-radius: 8px; white-space: pre-wrap;
-    font-size: 13px; max-height: 220px; overflow-y: auto; display: none;
+    font-size: 13px; height: 84px; overflow-y: auto; display: none;
   }
   #job .running { color: #d29922; }
   #job .done { color: #3fb950; }
   #job .error { color: #f85149; }
-  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #21262d; }
-  th { color: #8b949e; font-weight: normal; }
-  .state-running { color: #3fb950; }
-  .state-stopped { color: #8b949e; }
-  .state-untracked { color: #d29922; }
+  #grid {
+    display: grid; gap: 12px; margin-top: 8px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  }
+  .tile {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .tile header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 10px; font-size: 13px;
+  }
+  .tile header .id { color: #f0f6fc; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.running { background: #3fb950; }
+  .dot.exited { background: #8b949e; }
+  .dot.untracked { background: #d29922; }
+  .shot {
+    width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block;
+    background: #0d1117; border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
+  }
+  .noshot {
+    width: 100%; aspect-ratio: 16 / 10; display: flex; align-items: center;
+    justify-content: center; color: #6e7681; font-size: 12px; text-align: center;
+    background: #0d1117; border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
+    padding: 8px;
+  }
+  .tile footer {
+    padding: 6px 10px; font-size: 12px; color: #8b949e;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .empty { color: #8b949e; padding: 24px 0; text-align: center; }
-  footer { margin-top: 24px; color: #6e7681; font-size: 12px; }
+  body > footer { margin-top: 24px; color: #6e7681; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -63,22 +88,18 @@
 
 <div id="job"></div>
 
-<table>
-  <thead>
-    <tr><th>id</th><th>proxy</th><th>os</th><th>timezone</th><th>user agent</th><th>pid</th><th>state</th></tr>
-  </thead>
-  <tbody id="rows"></tbody>
-</table>
+<div id="grid"></div>
 <div id="empty" class="empty">no profiles — Create a set to begin</div>
 
 <footer>
-  Identities launched from this dashboard are tracked directly. Ones launched
-  via ffid.sh show as “untracked”. Stop kills tracked instances and deletes
-  all profiles.
+  Launch attaches the Playwright controller: windows close when the dashboard
+  exits. Identities launched via ffid.sh show as “untracked” (no live view).
+  Stop kills everything and deletes all profiles.
 </footer>
 
 <script>
 const $ = (id) => document.getElementById(id);
+let lastSig = null;
 
 async function api(path, body) {
   const res = await fetch(path, {
@@ -97,6 +118,8 @@ $("stop").onclick = () => {
   if (confirm("Kill all identity instances and DELETE the profiles?")) api("/api/stop");
 };
 
+function esc(s) { return String(s ?? "?").replace(/</g, "&lt;"); }
+
 function render(state) {
   $("proxies").textContent =
     `${state.proxy_entries} proxies configured (${state.direct_entries} DIRECT)`;
@@ -108,7 +131,7 @@ function render(state) {
     jobEl.style.display = "block";
     jobEl.innerHTML =
       `<span class="${job.status}">● ${job.kind} — ${job.status}</span>\n` +
-      job.log.map(l => l.replace(/</g, "&lt;")).join("\n");
+      job.log.map(esc).join("\n");
     jobEl.scrollTop = jobEl.scrollHeight;
   } else {
     jobEl.style.display = "none";
@@ -119,20 +142,37 @@ function render(state) {
   $("launch").disabled = busy;
   $("stop").disabled = busy;
 
-  const rows = state.identities.map(i => {
-    let stateText, cls;
-    if (i.tracked && i.running)      { stateText = "running";   cls = "state-running"; }
-    else if (i.tracked)              { stateText = "exited";    cls = "state-stopped"; }
-    else if (i.running === null)     { stateText = "untracked"; cls = "state-untracked"; }
-    else                             { stateText = "stopped";   cls = "state-stopped"; }
-    return `<tr>
-      <td>${i.id}</td><td>${i.proxy}</td><td>${i.os || "?"}</td>
-      <td>${i.tz || "?"}</td><td>…${i.ua_tail || "?"}</td>
-      <td>${i.pid || "—"}</td><td class="${cls}">${stateText}</td>
-    </tr>`;
-  }).join("");
-  $("rows").innerHTML = rows;
-  $("empty").style.display = state.identities.length ? "none" : "block";
+  // rebuild the grid only when the identity set or run-states change
+  const sig = JSON.stringify(state.identities.map(i =>
+    [i.id, i.controlled, i.running, i.proxy, i.os, i.tz, i.ua_tail]));
+  if (sig !== lastSig) {
+    lastSig = sig;
+    $("grid").innerHTML = state.identities.map(i => {
+      let cls, label;
+      if (i.controlled)        { cls = "running";   label = "controlled"; }
+      else if (i.running)      { cls = "running";   label = "running"; }
+      else if (i.tracked)      { cls = "exited";    label = "exited"; }
+      else                     { cls = "untracked"; label = "untracked"; }
+      const view = i.controlled
+        ? `<img class="shot" data-shot="${esc(i.id)}" alt="">`
+        : `<div class="noshot">no live view<br>(${label})</div>`;
+      return `<div class="tile">
+        <header><span class="id">${esc(i.id)}</span>
+          <span><span class="dot ${cls}"></span> ${label}</span></header>
+        ${view}
+        <footer>${esc(i.proxy)} · ${esc(i.os)} · ${esc(i.tz)}<br>…${esc(i.ua_tail)}</footer>
+      </div>`;
+    }).join("");
+    $("empty").style.display = state.identities.length ? "none" : "block";
+    refreshShots();
+  }
+}
+
+function refreshShots() {
+  const t = Date.now();
+  document.querySelectorAll("img.shot").forEach(img => {
+    img.src = `/api/shot/${img.dataset.shot}?t=${t}`;
+  });
 }
 
 async function refresh() {
@@ -144,6 +184,7 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 2000);
+setInterval(refreshShots, 3000);
 </script>
 </body>
 </html>

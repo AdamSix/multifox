@@ -35,6 +35,57 @@ LAUNCH_STAGGER = 5
 _tracked = {}
 
 
+# Non-proxy preferences, single source of truth: write_user_js renders these
+# into user.js for the CLI path, and the Playwright controller passes them as
+# firefox_user_prefs. (Proxy prefs differ per path and stay in write_user_js.)
+IPV6_PREF = {"network.dns.disableIPv6": True}
+
+WEBRTC_PREFS = {
+    "media.peerconnection.enabled": False,
+    "media.peerconnection.ice.default_address_only": True,
+    "media.peerconnection.ice.no_host": True,
+    "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
+}
+
+HYGIENE_PREFS = {
+    "browser.shell.checkDefaultBrowser": False,
+    "browser.shell.skipDefaultBrowserCheckOnFirstRun": True,
+    "browser.aboutwelcome.enabled": False,
+    "trailhead.firstrun.didSeeAboutWelcome": True,
+    "datareporting.policy.dataSubmissionEnabled": False,
+    "datareporting.healthreport.uploadEnabled": False,
+    "app.shield.optoutstudies.enabled": False,
+    "browser.discovery.enabled": False,
+    "browser.crashReports.unsubmittedCheck.autoSubmit2": False,
+    "signon.rememberSignons": False,
+    "signon.autofillForms": False,
+    "browser.formfill.enable": False,
+    "browser.sessionstore.resume_from_crash": False,
+    "toolkit.startup.max_resumed_crashes": -1,
+    "browser.sessionstore.max_resumed_crashes": -1,
+    "dom.security.https_only_mode": True,
+}
+
+FIREFOX_PREFS = {**IPV6_PREF, **WEBRTC_PREFS, **HYGIENE_PREFS}
+
+# explanatory comments kept in the generated user.js
+_TRAILING_COMMENTS = {
+    "network.dns.disableIPv6": " // prevent IPv6 bypassing the proxy",
+    "toolkit.startup.max_resumed_crashes": " // never offer Troubleshoot Mode after a hard kill",
+    "browser.sessionstore.max_resumed_crashes": " // legacy name of the same pref",
+}
+
+
+def _render_pref(key, value):
+    if isinstance(value, bool):
+        rendered = "true" if value else "false"
+    elif isinstance(value, str):
+        rendered = f'"{value}"'
+    else:
+        rendered = str(value)
+    return f'user_pref("{key}", {rendered});' + _TRAILING_COMMENTS.get(key, "")
+
+
 def proxy_for(index, entries=None):
     """1-based identity index -> proxies.conf entry, cycled modulo entry count."""
     entries = proxy_entries() if entries is None else entries
@@ -68,34 +119,16 @@ def write_user_js(profile_dir, index, entry):
             'user_pref("network.proxy.failover_direct", false); // never leak direct if proxy dies',
         ]
     lines += [
-        'user_pref("network.dns.disableIPv6", true); // prevent IPv6 bypassing the proxy',
+        _render_pref("network.dns.disableIPv6", True),
         "",
         "// WebRTC: hard off + belt-and-suspenders",
-        'user_pref("media.peerconnection.enabled", false);',
-        'user_pref("media.peerconnection.ice.default_address_only", true);',
-        'user_pref("media.peerconnection.ice.no_host", true);',
-        'user_pref("media.peerconnection.ice.proxy_only_if_behind_proxy", true);',
+        *(_render_pref(k, v) for k, v in WEBRTC_PREFS.items()),
         "",
         "// NOTE: no privacy.resistFingerprinting here — Camoufox does its own",
         "// C++-level spoofing via the persona config; RFP would conflict with it.",
         "",
         "// hygiene",
-        'user_pref("browser.shell.checkDefaultBrowser", false);',
-        'user_pref("browser.shell.skipDefaultBrowserCheckOnFirstRun", true);',
-        'user_pref("browser.aboutwelcome.enabled", false);',
-        'user_pref("trailhead.firstrun.didSeeAboutWelcome", true);',
-        'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
-        'user_pref("datareporting.healthreport.uploadEnabled", false);',
-        'user_pref("app.shield.optoutstudies.enabled", false);',
-        'user_pref("browser.discovery.enabled", false);',
-        'user_pref("browser.crashReports.unsubmittedCheck.autoSubmit2", false);',
-        'user_pref("signon.rememberSignons", false);',
-        'user_pref("signon.autofillForms", false);',
-        'user_pref("browser.formfill.enable", false);',
-        'user_pref("browser.sessionstore.resume_from_crash", false);',
-        'user_pref("toolkit.startup.max_resumed_crashes", -1); // never offer Troubleshoot Mode after a hard kill',
-        'user_pref("browser.sessionstore.max_resumed_crashes", -1); // legacy name of the same pref',
-        'user_pref("dom.security.https_only_mode", true);',
+        *(_render_pref(k, v) for k, v in HYGIENE_PREFS.items()),
     ]
     (profile_dir / "user.js").write_text("\n".join(lines) + "\n")
 

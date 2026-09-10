@@ -6,15 +6,20 @@ Local web dashboard for ff-sessions — manage Camoufox identity profiles
 Run with the project venv: .venv/bin/python dashboard.py
 Then open http://127.0.0.1:8787
 
-Binds localhost only. No dependencies beyond the stdlib plus ffid_core.
+Binds localhost only. Launch uses the Playwright controller (controller.py):
+headed windows under automation control, with live screenshots in the UI.
+The dashboard must stay alive for the whole session — quitting it closes
+the browser windows. (For detached fire-and-forget windows, use ffid.sh.)
 """
 
+import atexit
 import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import controller
 import ffid_core
 
 ROOT = Path(__file__).resolve().parent
@@ -60,8 +65,27 @@ def _start_job(kind, fn, *args):
     return job, None
 
 
+def _stop_all(log):
+    try:
+        controller.get_controller().stop(log)
+    except RuntimeError as exc:
+        log(f"controller: {exc}")
+    ffid_core.stop_profiles(log)
+
+
 def _state():
     state = ffid_core.status()
+    controlled = set()
+    if controller._instance is not None:
+        try:
+            controlled = set(controller.get_controller().controlled_idents())
+        except Exception:
+            pass
+    for ident in state["identities"]:
+        ident["controlled"] = ident["id"] in controlled
+        if ident["controlled"]:
+            ident["running"] = True
+    state["mode"] = "controller" if controlled else "none"
     with _jobs_lock:
         state["jobs"] = [
             {k: v for k, v in j.items()} for j in _jobs[-5:]
@@ -98,6 +122,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/api/state":
             self._send_json(_state())
+        elif self.path.startswith("/api/shot/"):
+            ident = self.path[len("/api/shot/"):]
+            try:
+                data = controller.get_controller().screenshot(ident)
+            except RuntimeError:
+                data = None
+            if data is None:
+                self._send_json({"error": "no screenshot available"}, 404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -112,9 +151,11 @@ class Handler(BaseHTTPRequestHandler):
             job, err = _start_job("create", ffid_core.create_profiles, count)
         elif self.path == "/api/launch":
             url = body.get("url") or "about:blank"
-            job, err = _start_job("launch", ffid_core.launch_profiles, url)
+            job, err = _start_job(
+                "launch", lambda u, log: controller.get_controller().launch(u, log), url
+            )
         elif self.path == "/api/stop":
-            job, err = _start_job("stop", ffid_core.stop_profiles)
+            job, err = _start_job("stop", _stop_all)
         else:
             self._send_json({"error": "not found"}, 404)
             return
@@ -128,8 +169,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    @atexit.register
+    def _cleanup():
+        if controller._instance is not None:
+            try:
+                controller._instance.stop(lambda line: None)
+            except Exception:
+                pass
+
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"ff-sessions dashboard: http://{HOST}:{PORT}  (Ctrl-C to quit)")
+    print("note: quitting the dashboard closes all browser windows it launched")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
