@@ -4,7 +4,7 @@ Local web dashboard for multifox — manage Camoufox identity profiles
 (create / launch / stop / status) from a browser UI.
 
 Run with the project venv: .venv/bin/python dashboard.py
-Then open http://127.0.0.1:8787
+Then open http://multifox.localhost:8787
 
 Binds localhost only. Launch uses the Playwright controller (controller.py):
 headed windows under automation control, with live screenshots in the UI.
@@ -282,7 +282,7 @@ def main():
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     threading.Thread(target=_freshness_worker, daemon=True).start()
-    print(f"multifox dashboard: http://{HOST}:{PORT}  (Ctrl-C to quit)")
+    print(f"multifox dashboard: http://multifox.localhost:{PORT}  (Ctrl-C to quit)")
     print("note: quitting the dashboard closes all browser windows it launched")
     try:
         server.serve_forever()

@@ -45,7 +45,7 @@ def main():
         print(f"  2. start the dashboard: {py} dashboard.py")
     else:
         print("  2. start the dashboard: ./ffid.sh dashboard")
-    print("  3. open http://127.0.0.1:8787")
+    print("  3. open http://multifox.localhost:8787")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ Desktop launcher for multifox — the packaged app's entry point.
 
 Shows a small native window that:
   1. on first run, downloads the Camoufox browser + GeoIP database
-  2. starts the dashboard server (in-process, on http://127.0.0.1:8787)
+  2. starts the dashboard server (in-process, on http://multifox.localhost:8787)
   3. presents a button to open the dashboard in the default browser
 
 Quitting the window stops the server and any controlled browser sessions.
@@ -25,7 +25,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-APP_NAME = "ff-sessions"
+APP_NAME = "multifox"
 DISPLAY_NAME = "multifox"
 
 
@@ -45,7 +45,7 @@ os.environ["FFID_HOME"] = str(HOME)
 # Static assets and the proxies.conf template live in the bundle when frozen.
 BUNDLE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
-DASHBOARD_URL = "http://127.0.0.1:8787"
+DASHBOARD_URL = "http://multifox.localhost:8787"
 
 
 class Launcher:

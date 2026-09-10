@@ -1,7 +1,7 @@
 #!/bin/bash
-# build_app.sh — build the ff-sessions desktop app with PyInstaller
+# build_app.sh — build the multifox desktop app with PyInstaller
 #
-#   ./build_app.sh           build dist/ff-sessions.app (+ a zip next to it)
+#   ./build_app.sh           build dist/multifox.app (+ a zip next to it)
 #
 # Architecture: the build matches the machine you run it on. For Apple
 # Silicon build on an arm64 Mac, for Intel on an x86_64 Mac (or CI).
@@ -33,17 +33,17 @@ rm -rf "$STAGE"
 echo "staged $(du -sh "$PAYLOAD_ZIP" | cut -f1) browser payload zip into the bundle"
 
 cd "$ROOT"
-"$PY" -m PyInstaller --noconfirm --clean --distpath "$ROOT/dist" --workpath "$ROOT/build" "$ROOT/ff-sessions.spec"
+"$PY" -m PyInstaller --noconfirm --clean --distpath "$ROOT/dist" --workpath "$ROOT/build" "$ROOT/multifox.spec"
 
-APP="$ROOT/dist/ff-sessions.app"
+APP="$ROOT/dist/multifox.app"
 [[ -d "$APP" ]] || { echo "error: $APP was not produced" >&2; exit 1; }
 
 # zip for distribution (ditto preserves macOS metadata/permissions)
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$ROOT/dist/ff-sessions.zip"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$ROOT/dist/multifox.zip"
 
 echo
 echo "built: $APP"
-echo "zipped: $ROOT/dist/ff-sessions.zip"
+echo "zipped: $ROOT/dist/multifox.zip"
 echo
 echo "note: the app is unsigned. On another Mac, right-click -> Open the first"
-echo "time (or run: xattr -dr com.apple.quarantine /path/to/ff-sessions.app)"
+echo "time (or run: xattr -dr com.apple.quarantine /path/to/multifox.app)"

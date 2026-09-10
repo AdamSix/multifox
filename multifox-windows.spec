@@ -1,9 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the ff-sessions desktop app.
+"""PyInstaller spec for the multifox desktop app (Windows).
 
-Build with:  ./build_app.sh        (macOS, produces dist/ff-sessions.app)
-Per-architecture builds: run on an arm64 Mac for Apple Silicon, an Intel Mac
-(or CI runner) for x86_64 — PyInstaller does not cross-compile.
+Build with:  .\\build_app.ps1    (produces dist/multifox/multifox.exe)
+Separate from multifox.spec because BUNDLE (.app) is macOS-only.
 """
 
 from PyInstaller.utils.hooks import collect_all
@@ -13,9 +12,7 @@ binaries = []
 hiddenimports = []
 
 # bundled Camoufox browser + GeoIP DB + addons as a zip, staged by
-# build_app.sh so the app installs offline with no first-run download.
-# (shipped as a zip so PyInstaller treats the browser's dylibs as opaque
-# data instead of trying to rewrite their rpaths)
+# build_app.ps1 so the app installs offline with no first-run download.
 import os.path
 
 if os.path.isfile("build/bundle_payload.zip"):
@@ -55,7 +52,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="ff-sessions",
+    name="multifox",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -68,15 +65,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="ff-sessions",
-)
-app = BUNDLE(
-    coll,
-    name="ff-sessions.app",
-    icon=None,
-    bundle_identifier="com.ffsessions.app",
-    info_plist={
-        "CFBundleShortVersionString": "0.1.0",
-        "NSHighResolutionCapable": True,
-    },
+    name="multifox",
 )
