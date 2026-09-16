@@ -23,14 +23,15 @@ from .personas import camou_config, generate_persona
 
 MAX_SESSIONS = 100
 
-# Seconds of random stagger between launches (avoids synchronized first connections).
-LAUNCH_STAGGER = 5
+# Seconds of random stagger between launches (avoids synchronized first
+# connections). Applied per identity, so ten identities spread over ~50s.
+LAUNCH_STAGGER = 10
 
 PROFILE_FILE = "profile.json"
 
-# Passed to every browser as firefox_user_prefs. No privacy.resistFingerprinting:
-# Camoufox does its own C++-level spoofing via the persona config; RFP would
-# conflict with it.
+# Base prefs for every browser; identity_prefs() adds the per-persona ones.
+# No privacy.resistFingerprinting: Camoufox does its own C++-level spoofing via
+# the persona config; RFP would conflict with it.
 FIREFOX_PREFS = {
     "network.dns.disableIPv6": True,  # prevent IPv6 bypassing the proxy
     # WebRTC: hard off + belt-and-suspenders
@@ -57,6 +58,27 @@ FIREFOX_PREFS = {
     "browser.sessionstore.max_resumed_crashes": -1,
     "dom.security.https_only_mode": True,
 }
+
+
+def identity_prefs(env):
+    """Firefox prefs for one identity: the base set plus what its persona claims.
+
+    Camoufox spoofs navigator.doNotTrack and navigator.globalPrivacyControl in
+    JS, but the matching headers come from Firefox prefs. Left unset, a browser
+    claims the preference in JS and never sends it — which is what Akamai
+    reported back as 'dnt=unspecified'. BrowserForge randomises both per
+    persona, so this cannot be a fixed pref.
+    """
+    prefs = dict(FIREFOX_PREFS)
+    try:
+        cfg = camou_config(env)
+    except ValueError:
+        return prefs
+    prefs["privacy.donottrackheader.enabled"] = cfg.get("navigator.doNotTrack") == "1"
+    prefs["privacy.globalprivacycontrol.enabled"] = (
+        cfg.get("navigator.globalPrivacyControl") is True
+    )
+    return prefs
 
 
 # -- proxy settings -----------------------------------------------------------

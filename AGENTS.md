@@ -41,7 +41,7 @@ launcher.py           shim -> multifox.launcher:main    (desktop app entry point
 multifox/
   paths.py            all filesystem locations; HOME (writable data) vs BUNDLE (read-only assets)
   personas.py         generate_persona(index, proxy) -> CAMOU_* env for one identity
-  core.py             identities on disk, proxy config, camoufox version checks + update
+  core.py             identities on disk, proxy config, per-identity prefs, camoufox version checks + update
   controller.py       Playwright driver thread; launch / screenshot / focus / reload / stop, per-identity network log
   app.py              App: shared state — controller, background jobs, freshness
   dashboard.py        stdlib http.server on 127.0.0.1:8787 + JSON API
@@ -72,9 +72,29 @@ them.
 - **`FIREFOX_PREFS` in `core.py` deliberately omits
   `privacy.resistFingerprinting`.** Camoufox spoofs at the C++ level from the
   persona config; RFP fights it. Do not add it.
+- **Prefs that have a JS counterpart must be set per identity.** Camoufox
+  spoofs `navigator.doNotTrack` and `navigator.globalPrivacyControl` in JS,
+  while the DNT and Sec-GPC headers come from prefs. BrowserForge randomises
+  both per persona, so `identity_prefs(env)` derives them from the persona
+  instead of fixing them in `FIREFOX_PREFS`. Left unset, every identity
+  claimed the preference in JS and never sent it.
 - **Screen constraints in `personas.py` keep a persona self-consistent.**
   Without them the generator clamps to the host screen, so a spoofed-Windows
-  identity would claim a MacBook resolution.
+  identity would claim a MacBook resolution. The constraint asks for an exact
+  size, because a range lets the generator invent sizes no device ships. Not
+  every size has a fingerprint, so `_generate` walks `SCREENS` until one works.
+- **Never pass `screen.*` or `navigator.*` through `launch_options(config=)`.**
+  Camoufox records which domains the caller set and then skips its own
+  corrections for them: `clamp_screen_to_display`, `fix_screen_no_taskbar`,
+  `clamp_window_dimensions`, `fix_navigator_arch`. One override key disables
+  the lot, which silently produced screens ignoring the size constraint.
+  Repairs belong in `_patch`, after generation, where the emitted values are
+  known and can be clamped against each other.
+- **`camou_config` must sort chunks numerically.** Camoufox splits the config
+  at 2047 characters on Windows, so a persona reaches `CAMOU_CONFIG_10`, and a
+  name sort puts it before `_2` and yields invalid JSON. `Identity.summary`
+  swallows that as a `ValueError`, so the only symptom is a dashboard showing
+  `?` for every field. `_chunk` re-splits at 2047 on every platform.
 - **Frozen vs source paths.** `paths.FROZEN` splits writable data (per-user
   data dir when frozen, the project dir otherwise) from bundled assets
   (`sys._MEIPASS`). New files must be classified as one or the other in
@@ -145,6 +165,11 @@ count never leaves stale identities behind.
 | POST | `/api/focus` | raise one identity's OS window |
 | POST | `/api/proxies` | set the global proxy toggle |
 | POST | `/api/open-log` | open `dashboard.log` in the OS text editor |
+
+`/api/state` reports `dead: true` for an identity whose screenshots have failed
+`SHOT_FAILURES_BEFORE_DEAD` times running, with the last error in `error`. The
+UI paints that tile red and tells the user to check the window, because a
+crashed page is otherwise indistinguishable from an idle one.
 
 Long operations run as background jobs: one at a time, `409` when another is
 already running. A POST returns a job id immediately; the UI polls

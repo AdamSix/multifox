@@ -41,6 +41,15 @@ class App:
         except Exception:
             return []
 
+    def health(self):
+        """Per-identity liveness, without starting the driver."""
+        if self._controller is None:
+            return {}
+        try:
+            return self._controller.health()
+        except Exception:
+            return {}
+
     def shutdown(self):
         if self._controller is not None:
             try:
@@ -153,8 +162,12 @@ class App:
     def state(self):
         state = core.status()
         controlled = set(self.controlled_idents())
+        health = self.health()
         for ident in state["identities"]:
             ident["controlled"] = ident["id"] in controlled
+            info = health.get(ident["id"], {})
+            ident["dead"] = bool(info.get("dead"))
+            ident["error"] = info.get("error")
         state["freshness"] = self.freshness
         with self._jobs_lock:
             state["jobs"] = [dict(j) for j in self._jobs[-5:]]

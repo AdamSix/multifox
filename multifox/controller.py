@@ -29,6 +29,10 @@ from . import core, paths
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
 
+# Consecutive screenshot failures before an identity is reported as dead. A
+# crashed or closed page otherwise looks identical to an idle one in the UI.
+SHOT_FAILURES_BEFORE_DEAD = 3
+
 # Successful images/fonts/css say nothing about why a session was blocked.
 NETLOG_SKIP_TYPES = {"image", "font", "media", "stylesheet"}
 
@@ -314,7 +318,7 @@ class Controller:
                 "executable_path": ff,
                 "headless": False,
                 "env": {**os.environ, **ident.env},
-                "firefox_user_prefs": dict(core.FIREFOX_PREFS),
+                "firefox_user_prefs": core.identity_prefs(ident.env),
             }
             if ident.proxy != "DIRECT":
                 kwargs["proxy"] = {"server": f"socks5://{ident.proxy}"}
@@ -324,7 +328,9 @@ class Controller:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 if url and url != "about:blank":
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                self._contexts[ident.id] = {"ctx": ctx, "page": page, "shot": None}
+                self._contexts[ident.id] = {
+                    "ctx": ctx, "page": page, "shot": None, "fails": 0, "error": None,
+                }
                 launched += 1
                 log(f"launched {ident.id} (controlled)")
             except Exception as exc:
@@ -341,10 +347,23 @@ class Controller:
             return cached[1]
         try:
             data = entry["page"].screenshot(type="jpeg", quality=50)
-        except Exception:
+        except Exception as exc:
+            entry["fails"] += 1
+            entry["error"] = str(exc).splitlines()[0][:200]
             return None  # page closed or crashed; next poll retries
+        entry["fails"] = 0
+        entry["error"] = None
         entry["shot"] = (time.time(), data)
         return data
+
+    def _cmd_health(self):
+        return {
+            ident: {
+                "dead": entry["fails"] >= SHOT_FAILURES_BEFORE_DEAD,
+                "error": entry["error"],
+            }
+            for ident, entry in self._contexts.items()
+        }
 
     def _cmd_focus(self, ident):
         entry = self._contexts.get(ident)
@@ -410,4 +429,7 @@ class Controller:
 
     def controlled_idents(self):
         return self._dispatch("controlled")
+
+    def health(self):
+        return self._dispatch("health")
 

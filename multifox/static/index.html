@@ -89,6 +89,13 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .dot.running { background: #3fb950; }
   .dot.stopped { background: #8b949e; }
+  .dot.dead { background: #f85149; }
+  .tile.dead { border-color: #f85149; }
+  .tile.dead .shot { opacity: .35; }
+  .deadnote {
+    padding: 6px 10px; font-size: 12px; color: #f85149;
+    background: #2d1416; border-top: 1px solid #3d1d20;
+  }
   .shot {
     width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block;
     background: #0d1117; border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
@@ -313,19 +320,25 @@ function render(state) {
 
   // rebuild the grid only when the identity set or run-states change
   const sig = JSON.stringify(state.identities.map(i =>
-    [i.id, i.controlled, i.proxy, i.os, i.tz, i.ua_tail]));
+    [i.id, i.controlled, i.dead, i.error, i.proxy, i.os, i.tz, i.ua_tail]));
   if (sig !== lastSig) {
     lastSig = sig;
     $("grid").innerHTML = state.identities.map(i => {
-      const cls = i.controlled ? "running" : "stopped";
+      const cls = i.dead ? "dead" : i.controlled ? "running" : "stopped";
       const view = i.controlled
         ? `<img class="shot" data-shot="${esc(i.id)}" alt="">`
         : `<div class="noshot">no live view<br>(${cls})</div>`;
-      return `<div class="tile${i.controlled ? " live" : ""}" data-focus="${esc(i.id)}"
+      const note = i.dead
+        ? `<div class="deadnote">window not responding — check it
+            ${i.error ? `<br><span style="opacity:.7">${esc(i.error)}</span>` : ""}</div>`
+        : "";
+      return `<div class="tile${i.controlled ? " live" : ""}${i.dead ? " dead" : ""}"
+        data-focus="${esc(i.id)}"
         title="${i.controlled ? "click to focus this window" : ""}">
         <header><span class="id">${esc(i.id)}</span>
           <span><span class="dot ${cls}"></span> ${cls}</span></header>
         ${view}
+        ${note}
         <footer>${esc(i.proxy)} · ${esc(i.os)} · ${esc(i.tz)}<br>…${esc(i.ua_tail)}</footer>
       </div>`;
     }).join("");
