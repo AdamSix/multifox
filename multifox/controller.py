@@ -3,6 +3,9 @@ Playwright controller for multifox — launches identities as persistent
 contexts and keeps them under automation control (screenshots now, goto/eval/
 harvest later).
 
+Every context also writes a diagnostic network log to netlogs/<ident>.jsonl,
+so a block or a failed request can be attributed after the fact.
+
 Playwright's sync API has thread affinity: every object must be used from the
 thread that called sync_playwright(). So the controller owns a dedicated
 driver thread; callers dispatch commands through a queue and wait on results.
@@ -10,6 +13,7 @@ driver thread; callers dispatch commands through a queue and wait on results.
 The controller must outlive the sessions: closing it closes the browsers.
 """
 
+import json
 import os
 import queue
 import random
@@ -24,6 +28,48 @@ from . import core, paths
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
+
+# Successful images/fonts/css say nothing about why a session was blocked.
+NETLOG_SKIP_TYPES = {"image", "font", "media", "stylesheet"}
+
+# Header values are truncated to this many characters. Akamai's _abck cookie
+# alone runs to 1.2KB, and a full Cookie header to 6KB; the prefix is enough to
+# identify a header, and the profile holds the real cookie values.
+NETLOG_MAX_HEADER = 200
+
+# Entries written per (status, url) before further ones are suppressed. A page
+# stuck reloading a block page would otherwise log the same failure for hours.
+NETLOG_MAX_PER_KEY = 20
+
+# Hard ceiling per identity. Reaching it writes one notice and stops.
+NETLOG_MAX_BYTES = 16 * 1024 * 1024
+
+# Headers kept for successful responses. Failures record every header instead,
+# because the reason for a block usually only appears there.
+NETLOG_HEADERS = frozenset({
+    "akamai-grn",
+    "content-type",
+    "retry-after",
+    "server",
+    "server-timing",
+    "set-cookie",
+    "x-akamai-request-id",
+    "x-akamai-transformed",
+    "x-cache",
+    "x-reference-error",
+})
+
+
+def _clip_headers(headers, keep=None):
+    """Header dict with long values truncated, optionally limited to `keep` names."""
+    clipped = {}
+    for name, value in headers.items():
+        if keep is not None and name not in keep:
+            continue
+        clipped[name] = value if len(value) <= NETLOG_MAX_HEADER else (
+            value[:NETLOG_MAX_HEADER] + f"…(+{len(value) - NETLOG_MAX_HEADER}B)"
+        )
+    return clipped
 
 
 def accessibility_trusted(prompt=False):
@@ -135,6 +181,7 @@ class Controller:
             self._ready.set()
             return
         self._contexts = {}  # ident -> {"ctx", "page", "proxy", "shot": (ts, bytes)}
+        self._netlogs = {}  # ident -> open netlogs/<ident>.jsonl handle
         self._ready.set()
         while True:
             name, args, result_q = self._commands.get()
@@ -153,6 +200,100 @@ class Controller:
         return value
 
     # -- commands (driver thread only) --------------------------------------
+
+    def _attach_netlog(self, ident, ctx):
+        """Record this context's responses and network failures to netlogs/<ident>.jsonl.
+
+        One JSON object per line. Kept outside profiles/ so a Stop, which wipes
+        every profile, does not take the evidence with it.
+        """
+        try:
+            paths.NETLOGS.mkdir(parents=True, exist_ok=True)
+            handle = (paths.NETLOGS / f"{ident}.jsonl").open("a", buffering=1)
+        except OSError:
+            return  # diagnostics are never worth failing a launch over
+        self._netlogs[ident] = handle
+        written = {"bytes": 0, "stopped": False}
+        seen = {}
+
+        def emit(entry):
+            entry["t"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            try:
+                line = json.dumps(entry) + "\n"
+            except (ValueError, TypeError):
+                return
+            if written["bytes"] + len(line) > NETLOG_MAX_BYTES:
+                if written["stopped"]:
+                    return
+                written["stopped"] = True
+                line = json.dumps({"event": "truncated", "limit": NETLOG_MAX_BYTES}) + "\n"
+            written["bytes"] += len(line)
+            try:
+                handle.write(line)
+            except OSError:
+                pass
+
+        def record(entry):
+            """Emit entry unless this (status, url) has already been logged enough."""
+            key = (entry.get("status"), entry.get("url"))
+            count = seen.get(key, 0) + 1
+            seen[key] = count
+            if count > NETLOG_MAX_PER_KEY:
+                if count == NETLOG_MAX_PER_KEY + 1:
+                    emit({
+                        "event": "suppressed",
+                        "status": key[0],
+                        "url": key[1],
+                        "after": NETLOG_MAX_PER_KEY,
+                    })
+                return
+            emit(entry)
+
+        emit({"event": "launch", "ident": ident})
+
+        def on_response(response):
+            try:
+                request = response.request
+                if response.ok and request.resource_type in NETLOG_SKIP_TYPES:
+                    return
+                entry = {
+                    "status": response.status,
+                    "method": request.method,
+                    "url": response.url,
+                    "type": request.resource_type,
+                }
+                if response.ok:
+                    entry["headers"] = _clip_headers(response.headers, NETLOG_HEADERS)
+                else:
+                    entry["headers"] = _clip_headers(response.headers)
+                    entry["request_headers"] = _clip_headers(request.headers)
+            except Exception:
+                return  # an exception here would surface on the driver thread
+            record(entry)
+
+        def on_requestfailed(request):
+            try:
+                entry = {
+                    "status": None,
+                    "method": request.method,
+                    "url": request.url,
+                    "type": request.resource_type,
+                    "failure": request.failure,
+                }
+            except Exception:
+                return
+            record(entry)
+
+        ctx.on("response", on_response)
+        ctx.on("requestfailed", on_requestfailed)
+
+    def _close_netlogs(self):
+        for handle in self._netlogs.values():
+            try:
+                handle.close()
+            except OSError:
+                pass
+        self._netlogs.clear()
 
     def _cmd_launch(self, url, log, progress=None):
         identities = core.load_identities()
@@ -179,6 +320,7 @@ class Controller:
                 kwargs["proxy"] = {"server": f"socks5://{ident.proxy}"}
             try:
                 ctx = self._pw.firefox.launch_persistent_context(**kwargs)
+                self._attach_netlog(ident.id, ctx)
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 if url and url != "about:blank":
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -240,6 +382,7 @@ class Controller:
             except Exception as exc:
                 log(f"warning: closing {ident} failed: {exc}")
         self._contexts.clear()
+        self._close_netlogs()
         if count:
             log(f"closed {count} controlled contexts")
         return count

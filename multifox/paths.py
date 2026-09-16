@@ -1,8 +1,9 @@
 """
 Filesystem locations for multifox.
 
-Runtime data (proxies.conf, settings.json, profiles/, logs) lives in HOME: a
-per-user data dir when frozen by PyInstaller, the project directory otherwise.
+Runtime data (proxies.conf, settings.json, profiles/, netlogs/, logs) lives in
+HOME: a per-user data dir when frozen by PyInstaller, the project directory
+otherwise.
 Bundled read-only assets (static/, the proxies.conf template, the browser
 payload) live in BUNDLE.
 """
@@ -31,6 +32,7 @@ HOME = _default_home()
 SETTINGS = HOME / "settings.json"
 PROXY_CONF = HOME / "proxies.conf"
 PROFILES = HOME / "profiles"
+NETLOGS = HOME / "netlogs"
 DASHBOARD_LOG = HOME / "dashboard.log"
 LAUNCHER_LOG = HOME / "launcher.log"
 

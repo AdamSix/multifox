@@ -1,5 +1,6 @@
 .venv/
 profiles/
+netlogs/
 __pycache__/
 .DS_Store
 build/

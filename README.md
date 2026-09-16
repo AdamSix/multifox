@@ -119,6 +119,22 @@ geolocation match its exit IP.
 - **The proxies must be UP when you create identities**, or the GeoIP lookups
   fail.
 
+## Diagnosing a blocked session
+
+Every identity records its HTTP responses to `netlogs/idN.jsonl` in the data
+dir, one JSON object per line. Failed responses keep all their headers, so a
+block page can be traced back to the request that produced it:
+
+```sh
+jq -c 'select(.status != null and .status >= 400)' netlogs/id4.jsonl
+```
+
+These logs survive **Stop** (which deletes every profile). Expect roughly
+100–500KB per identity per hour of browsing. Repeated requests to the same URL
+are logged 20 times and then suppressed, and each log stops at 16MB, so a page
+stuck on a block page cannot run away with the disk. Nothing deletes old logs
+between runs — remove them by hand.
+
 ## Verifying a session
 
 After launching, check each identity before use:
