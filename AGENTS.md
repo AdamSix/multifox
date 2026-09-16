@@ -78,6 +78,16 @@ them.
   both per persona, so `identity_prefs(env)` derives them from the persona
   instead of fixing them in `FIREFOX_PREFS`. Left unset, every identity
   claimed the preference in JS and never sent it.
+- **`OS_PERSONAS` in `personas.py` is restricted to the host's own OS
+  (`HOST_OS`), not a fixed cross-platform mix.** WebGL always renders through
+  this process's real backend regardless of what a persona claims, so a
+  persona claiming a different OS implies a backend (e.g. Direct3D on
+  Windows) it can never produce. Measured directly: on a macOS host,
+  identities claiming a Windows GPU and identities claiming an Apple GPU
+  produced byte-identical WebGL render hashes, proving neither touched the
+  claimed backend. Linux hosts are the unresolved exception — no `"linux"`
+  persona exists (its font set ships no base Latin family), so they still get
+  the old cross-OS mix and keep the host-mismatch tell open.
 - **Screen constraints in `personas.py` keep a persona self-consistent.**
   Without them the generator clamps to the host screen, so a spoofed-Windows
   identity would claim a MacBook resolution. The constraint asks for an exact

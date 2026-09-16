@@ -8,16 +8,39 @@ has none, so timezone / locale / geolocation match the exit IP. The resulting
 CAMOU_* environment variables are stored in the identity's profile.json and set
 on the browser process at launch.
 
-The OS/screen presets cycle per identity, but every identity still gets a
-unique randomly-generated BrowserForge fingerprint.
+The screen preset cycles per identity, but every identity still gets a unique
+randomly-generated BrowserForge fingerprint.
 """
 
 import json
+import sys
 
-# OS mix roughly matching real-world desktop market share, without Linux:
-# desktop Linux Firefox is a fraction of a percent of real traffic, and the
-# Linux font set ships no base Latin family, so the persona cannot render text.
-OS_PERSONAS = ["windows"] * 8 + ["macos"] * 2
+# The OS this copy of multifox is actually running on. Camoufox spoofs what
+# JavaScript reads, but WebGL still renders through this process's real
+# backend (Direct3D-ANGLE on Windows, native GL/Metal on macOS). A persona
+# claiming a different OS is claiming a rendering backend it can never
+# produce: measured on a macOS host, identities claiming a Windows GPU and
+# identities claiming an Apple GPU rendered byte-identical WebGL output,
+# proving neither actually went through the claimed backend. Restricting
+# personas to the host's own OS removes that tell.
+if sys.platform == "darwin":
+    HOST_OS = "macos"
+elif sys.platform == "win32":
+    HOST_OS = "windows"
+else:
+    HOST_OS = "linux"
+
+# OS mix per identity, restricted to the host OS so no persona claims a
+# rendering backend this process cannot produce (see HOST_OS above).
+#
+# Linux hosts are the exception: a "linux" persona is not offered because its
+# font set ships no base Latin family, so the page cannot render text. Falling
+# back to the old cross-OS mix here still leaves the host-mismatch tell open
+# on Linux specifically -- unresolved, not fixed.
+if HOST_OS == "linux":
+    OS_PERSONAS = ["windows"] * 8 + ["macos"] * 2
+else:
+    OS_PERSONAS = [HOST_OS]
 
 # Real display resolutions, cycled per identity. The generator is asked for an
 # exact size, because given a range it picks sizes no device ships (1376x774)
