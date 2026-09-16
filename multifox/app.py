@@ -129,6 +129,26 @@ class App:
     def launch_sessions(self, url, log, progress=None):
         self.controller().launch(url, log, progress=progress)
 
+    def add_sessions(self, count, url, log, progress=None):
+        """Create `count` more identities and launch only those."""
+        created = core.add_profiles(count, log, progress=progress)
+        self.controller().launch(
+            url, log, progress=progress, only=[ident.id for ident in created]
+        )
+
+    def remove_session(self, ident, log, progress=None):
+        """Close one identity's window, if it has one, and delete its profile."""
+        if progress:
+            progress(f"Closing {ident}…")
+        if self._controller is not None:
+            try:
+                self._controller.close(ident, log)
+            except RuntimeError as exc:
+                log(f"controller: {exc}")
+        if progress:
+            progress(f"Deleting {ident}…")
+        core.delete_profile(ident, log)
+
     def stop_all(self, log, progress=None):
         if progress:
             progress("Closing browser windows…")

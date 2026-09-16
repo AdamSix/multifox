@@ -8,12 +8,15 @@ has none, so timezone / locale / geolocation match the exit IP. The resulting
 CAMOU_* environment variables are stored in the identity's profile.json and set
 on the browser process at launch.
 
-The screen preset cycles per identity, but every identity still gets a unique
-randomly-generated BrowserForge fingerprint.
+The caller picks the least-used screen preset for each new identity, so the
+presets stay spread as identities are added and removed. Every identity still
+gets a unique randomly-generated BrowserForge fingerprint.
 """
 
 import json
+import random
 import sys
+from collections import Counter
 
 # The OS this copy of multifox is actually running on. Camoufox spoofs what
 # JavaScript reads, but WebGL still renders through this process's real
@@ -42,10 +45,11 @@ if HOST_OS == "linux":
 else:
     OS_PERSONAS = [HOST_OS]
 
-# Real display resolutions, cycled per identity. The generator is asked for an
-# exact size, because given a range it picks sizes no device ships (1376x774)
-# and a resolution that does not exist is trivial for a page to check. Not every
-# size has a matching fingerprint, so generation walks the list until one works.
+# Real display resolutions, one per identity (core picks the least-used one).
+# The generator is asked for an exact size, because given a range it picks
+# sizes no device ships (1376x774), and a resolution that does not exist is
+# trivial for a page to check. Not every size has a matching fingerprint, so
+# generation walks the list until one works.
 SCREENS = [
     (1920, 1080), (1680, 1050), (1536, 864), (1440, 900), (2560, 1440),
     (1920, 1200), (1600, 900), (1366, 768), (1280, 800), (2560, 1600),
@@ -95,13 +99,35 @@ def camou_config(env):
     return json.loads("".join(v for _, v in sorted(chunks))) if chunks else {}
 
 
-def _generate(index, os_persona, kwargs):
-    """launch_options with an exact screen size, trying SCREENS until one works."""
+def screen_ordinal(env):
+    """Index in SCREENS of the screen a persona actually uses, or None if it is not one."""
+    try:
+        cfg = camou_config(env)
+    except ValueError:
+        return None
+    size = (cfg.get("screen.width"), cfg.get("screen.height"))
+    return SCREENS.index(size) if size in SCREENS else None
+
+
+def _screen_order(in_use):
+    """SCREENS indices, least-used first, ties by index.
+
+    The whole order matters, not just the first choice: not every size has a
+    fingerprint for every OS, so generation falls through to the next entry.
+    Falling through to the next *least-used* one is what keeps the presets
+    spread; walking the list in order landed two identities on the same size.
+    """
+    tally = Counter(o for o in in_use if o is not None)
+    return sorted(range(len(SCREENS)), key=lambda i: (tally[i], i))
+
+
+def _generate(order, os_persona, kwargs):
+    """launch_options with an exact screen size, trying `order` until one works."""
     from browserforge.fingerprints import Screen
     from camoufox.utils import launch_options
 
-    for offset in range(len(SCREENS)):
-        width, height = SCREENS[(index + offset) % len(SCREENS)]
+    for index in order:
+        width, height = SCREENS[index]
         attempt = dict(
             kwargs,
             screen=Screen(
@@ -152,14 +178,16 @@ def _chunk(cfg, env):
     return rebuilt
 
 
-def generate_persona(index, proxy):
-    """Build the CAMOU_* env for identity `index` (0-based); returns (env, log_lines).
+def generate_persona(ident, proxy, screens_in_use=()):
+    """Build the CAMOU_* env for identity `ident`; returns (env, log_lines).
 
-    proxy is a proxies.conf entry ('host:port' or 'DIRECT').
+    proxy is a proxies.conf entry ('host:port' or 'DIRECT'). screens_in_use is
+    the screen_ordinal of every identity that already exists, so the new one
+    takes a preset the others do not use.
     """
-    ident = f"id{index + 1}"
     lines = []
-    os_persona = OS_PERSONAS[index % len(OS_PERSONAS)]
+    os_persona = random.choice(OS_PERSONAS)
+    order = _screen_order(screens_in_use)
     kwargs = {
         "os": os_persona,
         "block_webrtc": True,
@@ -173,13 +201,13 @@ def generate_persona(index, proxy):
         kwargs["proxy"] = {"server": f"socks5://{proxy}"}
 
     try:
-        opts = _generate(index, os_persona, kwargs)
+        opts = _generate(order, os_persona, kwargs)
     except NoUsableScreen:
         raise
     except Exception as exc:  # proxy down, GeoIP DB missing, offline, etc.
         lines.append(f"{ident}: GeoIP lookup failed ({exc}); falling back to random locale")
         del kwargs["geoip"]
-        opts = _generate(index, os_persona, kwargs)
+        opts = _generate(order, os_persona, kwargs)
 
     env = {k: str(v) for k, v in opts["env"].items() if k.startswith("CAMOU_")}
     if not env:

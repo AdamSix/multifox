@@ -299,13 +299,15 @@ class Controller:
                 pass
         self._netlogs.clear()
 
-    def _cmd_launch(self, url, log, progress=None):
+    def _cmd_launch(self, url, log, progress=None, only=None):
         identities, unloadable = core.scan_profiles()
         if unloadable:
             log(
                 f"warning: ignoring {len(unloadable)} unreadable profile(s) "
                 f"({', '.join(unloadable)}) — delete them, or press Stop to clear all"
             )
+        if only is not None:
+            identities = [ident for ident in identities if ident.id in set(only)]
         if not identities:
             raise RuntimeError("no profiles found — run create first")
         ff = core.browser_path()
@@ -383,7 +385,7 @@ class Controller:
     def _cmd_reload(self, url, log, progress=None):
         if not self._contexts:
             raise RuntimeError("no controlled sessions to reload")
-        contexts = sorted(self._contexts.items(), key=lambda kv: int(kv[0][2:]))
+        contexts = list(self._contexts.items())
         for n, (ident, entry) in enumerate(contexts, 1):
             if progress:
                 progress(f"Reloading window {n}/{len(contexts)}", n, len(contexts))
@@ -397,6 +399,24 @@ class Controller:
             except Exception as exc:
                 log(f"error: {ident} failed to reload: {exc}")
         return len(self._contexts)
+
+    def _cmd_close(self, ident, log):
+        """Close one identity's context and its netlog. False if it wasn't controlled."""
+        entry = self._contexts.pop(ident, None)
+        handle = self._netlogs.pop(ident, None)
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        if entry is None:
+            return False
+        try:
+            entry["ctx"].close()
+        except Exception as exc:
+            log(f"warning: closing {ident} failed: {exc}")
+        log(f"closed {ident}")
+        return True
 
     def _cmd_stop(self, log):
         count = len(self._contexts)
@@ -412,13 +432,13 @@ class Controller:
         return count
 
     def _cmd_controlled(self):
-        return sorted(self._contexts, key=lambda n: int(n[2:]))
+        return list(self._contexts)
 
     # -- public API (any thread) ---------------------------------------------
 
-    def launch(self, url, log, progress=None):
+    def launch(self, url, log, progress=None, only=None):
         # generous timeout: stagger + N context launches
-        return self._dispatch("launch", url, log, progress, timeout=3600)
+        return self._dispatch("launch", url, log, progress, only, timeout=3600)
 
     def screenshot(self, ident):
         return self._dispatch("screenshot", ident)
@@ -428,6 +448,9 @@ class Controller:
 
     def reload(self, url, log, progress=None):
         return self._dispatch("reload", url, log, progress, timeout=600)
+
+    def close(self, ident, log):
+        return self._dispatch("close", ident, log, timeout=120)
 
     def stop(self, log):
         return self._dispatch("stop", log, timeout=120)

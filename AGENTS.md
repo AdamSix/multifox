@@ -40,9 +40,9 @@ dashboard.py          shim -> multifox.dashboard:main   (headless server, dev us
 launcher.py           shim -> multifox.launcher:main    (desktop app entry point)
 multifox/
   paths.py            all filesystem locations; HOME (writable data) vs BUNDLE (read-only assets)
-  personas.py         generate_persona(index, proxy) -> CAMOU_* env for one identity
-  core.py             identities on disk, proxy config, per-identity prefs, camoufox version checks + update
-  controller.py       Playwright driver thread; launch / screenshot / focus / reload / stop, per-identity network log
+  personas.py         generate_persona(ident, proxy, ordinal) -> CAMOU_* env for one identity
+  core.py             identities on disk (create / add / delete one or all), proxy config, per-identity prefs, camoufox version checks + update
+  controller.py       Playwright driver thread; launch / screenshot / focus / reload / close one / stop, per-identity network log
   app.py              App: shared state — controller, background jobs, freshness
   dashboard.py        stdlib http.server on 127.0.0.1:8787 + JSON API
   launcher.py         packaged app: browser install/update, then dashboard in a pywebview window
@@ -88,6 +88,10 @@ them.
   claimed backend. Linux hosts are the unresolved exception — no `"linux"`
   persona exists (its font set ships no base Latin family), so they still get
   the old cross-OS mix and keep the host-mismatch tell open.
+- **Identity ids carry no order, so two things must supply it.** Tiles sort by
+  `created` from `profile.json`. Live contexts sort by insertion order in
+  `Controller._contexts`, which is launch order. Nothing may parse a number out
+  of an id.
 - **Screen constraints in `personas.py` keep a persona self-consistent.**
   Without them the generator clamps to the host screen, so a spoofed-Windows
   identity would claim a MacBook resolution. The constraint asks for an exact
@@ -120,19 +124,26 @@ them.
 Under `paths.HOME` (`~/Library/Application Support/multifox` on macOS,
 `%APPDATA%\multifox` on Windows, the project dir from a source checkout):
 
-- `profiles/idN/` — the Firefox profile directory.
-- `profiles/idN/profile.json` — `{index, proxy, env}`. `env` is the CAMOU_*
-  persona. This is the identity format; a change here invalidates existing
-  profiles, and `Identity.load` silently skips anything it cannot parse.
-- `proxies.conf` — one SOCKS5 `host:port` or `DIRECT` per line, in identity
-  order. Comments start with `#`.
+- `profiles/<id>/` — the Firefox profile directory. `<id>` is the identity id:
+  4 characters from `IDENT_ALPHABET` (digits and consonants, so no slug reads
+  as a word), drawn at random and never reused.
+- `profiles/<id>/profile.json` — `{id, proxy, created, env}`. `env` is the
+  CAMOU_* persona. This is the identity format; a change here invalidates
+  existing profiles, and `Identity.load` silently skips anything it cannot
+  parse. The id on disk is the directory name, not the `id` field, so a
+  profile written before ids became slugs still loads. `created` orders the
+  dashboard tiles; without it they would reshuffle on every poll, and it falls
+  back to the mtime of `profile.json`.
+- `proxies.conf` — one SOCKS5 `host:port` or `DIRECT` per line. Comments start
+  with `#`. A new identity takes the least-used line, not the line at its
+  position: identities have no position once one can be removed.
 - `settings.json` — `{"proxies": bool}` only.
 - `dashboard.log`, `launcher.log` — full job logs; the UI shows progress plus
   lines matching warning/error/fail.
 
 Under `paths.NETLOGS` (`netlogs/` beside `profiles/`):
 
-- `netlogs/idN.jsonl` — one JSON object per response, written by the Playwright
+- `netlogs/<id>.jsonl` — one JSON object per response, written by the Playwright
   context. A `{"event": "launch"}` line marks each run, since the file is
   appended across runs. Successful image/font/media/stylesheet responses are
   skipped. A successful response keeps only the headers in `NETLOG_HEADERS`; a
@@ -158,7 +169,10 @@ Three caps keep them bounded, all in `controller.py`:
 Nothing rotates the files across runs — delete them by hand.
 
 Stop deletes every profile. Start deletes the previous set first, so a smaller
-count never leaves stale identities behind.
+count never leaves stale identities behind. Add appends to the set and Remove
+deletes one profile, both while the other sessions keep running — which is why
+ids are random rather than an index: an index would have to be reused, and the
+netlog of the old holder would then gain a second persona.
 
 ## HTTP API (127.0.0.1:8787, localhost only)
 
@@ -170,6 +184,8 @@ count never leaves stale identities behind.
 | GET/POST | `/api/proxies/conf` | read / write `proxies.conf` text |
 | POST | `/api/start` | create N profiles then launch; reloads instead if sessions run |
 | POST | `/api/create` | profiles only, no launch |
+| POST | `/api/add` | create N more profiles (default 1) and launch only those |
+| POST | `/api/remove` | close one identity and delete its profile |
 | POST | `/api/launch` | launch existing profiles |
 | POST | `/api/stop` | close every context and delete all profiles |
 | POST | `/api/focus` | raise one identity's OS window |
@@ -181,11 +197,13 @@ count never leaves stale identities behind.
 UI paints that tile red and tells the user to check the window, because a
 crashed page is otherwise indistinguishable from an idle one.
 
-`/api/state` also carries `unloadable`: the `profiles/idN` directories that
+`/api/state` also carries `unloadable`: the `profiles/<id>` directories that
 produced no identity. `scan_profiles` returns both lists, and `load_identities`
 is a wrapper over it. Skipping a broken profile silently is not acceptable —
 the identity disappears from the dashboard while its ~80MB directory stays on
 disk — so the UI shows a persistent banner and `_cmd_launch` logs a warning.
+The banner's delete buttons post the directory name to `/api/remove`, which
+accepts a name that no identity could be loaded from for that reason.
 
 Long operations run as background jobs: one at a time, `409` when another is
 already running. A POST returns a job id immediately; the UI polls

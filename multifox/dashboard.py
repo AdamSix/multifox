@@ -14,6 +14,7 @@ the browser windows.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -26,6 +27,10 @@ HOST = "127.0.0.1"
 PORT = 8787
 LOCAL_URL = f"http://{HOST}:{PORT}"
 DASHBOARD_URL = f"http://multifox.localhost:{PORT}"
+
+# Identity ids are slugs, but a legacy or half-written profile directory can be
+# named anything; the pattern keeps a path separator out of the profiles dir.
+IDENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 def open_log_file():
@@ -64,9 +69,9 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return {}
 
-    def _read_count(self, body):
+    def _read_count(self, body, default=10):
         try:
-            return int(body.get("count", 10))
+            return int(body.get("count", default))
         except (TypeError, ValueError):
             return None
 
@@ -111,6 +116,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "count must be an integer"}, 400)
                 return
             self._send_job(app.start_job("create", core.create_profiles, count))
+        elif self.path == "/api/add":
+            count = self._read_count(body, default=1)
+            if count is None:
+                self._send_json({"error": "count must be an integer"}, 400)
+                return
+            url = body.get("url") or "about:blank"
+            self._send_job(app.start_job("add", app.add_sessions, count, url))
+        elif self.path == "/api/remove":
+            ident = body.get("id")
+            if not isinstance(ident, str) or not IDENT_RE.match(ident):
+                self._send_json({"error": "invalid identity id"}, 400)
+                return
+            self._send_job(app.start_job("remove", app.remove_session, ident))
         elif self.path == "/api/launch":
             url = body.get("url") or "about:blank"
             self._send_job(app.start_job("launch", app.launch_sessions, url))

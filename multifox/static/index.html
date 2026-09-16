@@ -32,6 +32,12 @@
   button:hover { background: #30363d; }
   button:disabled { opacity: 0.4; cursor: default; }
   button.danger { color: #f85149; }
+  /* hairline between Add and Start/Stop; on the button so it hides with it */
+  #add { position: relative; margin-right: 10px; }
+  #add::after {
+    content: ""; position: absolute; right: -10px; top: 4px; bottom: 4px;
+    width: 1px; background: #30363d;
+  }
   #job {
     margin: 16px auto; padding: 14px 16px; background: #161b22;
     border: 1px solid #30363d; border-radius: 8px;
@@ -86,6 +92,13 @@
     padding: 6px 10px; font-size: 13px;
   }
   .tile header .id { color: #f0f6fc; font-weight: 600; }
+  .tile header .right { display: flex; align-items: center; gap: 8px; }
+  .remove {
+    padding: 0 6px; font-size: 13px; line-height: 18px; color: #8b949e;
+    border-radius: 4px;
+  }
+  .remove:hover { color: #f85149; }
+  #grid.busy .remove, #profilewarn.busy .remove { opacity: .4; pointer-events: none; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .dot.running { background: #3fb950; }
   .dot.stopped { background: #8b949e; }
@@ -169,6 +182,7 @@
   <span id="proxies"></span>
   <span id="stale"></span>
   <span class="actions">
+    <button id="add" style="display:none" title="create one more identity and launch it">Add 1</button>
     <button id="start">Start</button>
     <button id="stop" class="danger">Stop</button>
   </span>
@@ -224,14 +238,22 @@ async function api(path, body) {
 }
 
 $("start").onclick = () => api("/api/start", {count: +$("count").value, url: $("url").value});
+$("add").onclick = () => api("/api/add", {url: $("url").value});
 $("stop").onclick = () => {
   if (confirm("Kill all identity instances and DELETE the profiles?")) api("/api/stop");
 };
 $("proxytoggle").onchange = () => api("/api/proxies", {enabled: $("proxytoggle").checked});
 $("openlog").onclick = () => api("/api/open-log");
 
-// click a live tile to bring its browser window to the front
-$("grid").addEventListener("click", async (e) => {
+// click a live tile to bring its browser window to the front; the ✕ removes it
+document.addEventListener("click", async (e) => {
+  const remove = e.target.closest(".remove");
+  if (remove) {
+    e.stopPropagation();
+    const id = remove.dataset.remove;
+    if (confirm(`Delete ${id}? Its window closes and the profile is erased.`)) api("/api/remove", {id});
+    return;
+  }
   const tile = e.target.closest(".tile.live");
   if (!tile) return;
   const res = await fetch("/api/focus", {
@@ -293,7 +315,8 @@ function render(state) {
     const titles = {
       start: "Starting identities", reload: "Reloading sessions",
       stop: "Stopping & wiping", create: "Creating identities",
-      launch: "Launching windows",
+      launch: "Launching windows", add: "Adding an identity",
+      remove: "Removing an identity",
     };
     const icon = running
       ? '<span class="spinner"></span>'
@@ -325,14 +348,19 @@ function render(state) {
   if (bad.length) {
     warn.innerHTML = `${bad.length} profile folder${bad.length > 1 ? "s" : ""} on disk
       could not be read and ${bad.length > 1 ? "are" : "is"} being ignored:
-      <b>${bad.map(esc).join(", ")}</b>. ${bad.length > 1 ? "They still take" : "It still takes"}
-      up disk space — press Stop to clear every profile, or delete
-      ${bad.length > 1 ? "them" : "it"} by hand.`;
+      ${bad.map(b => `<b>${esc(b)}</b>
+        <button class="remove" data-remove="${esc(b)}" title="delete this folder">✕</button>`).join(" ")}
+      ${bad.length > 1 ? "They still take" : "It still takes"} up disk space —
+      delete ${bad.length > 1 ? "them" : "it"} here, or press Stop to clear every profile.`;
   }
 
   const busy = (state.jobs || []).some(j => j.status === "running");
   $("start").disabled = busy;
   $("stop").disabled = busy;
+  $("add").disabled = busy;
+  $("add").style.display = state.identities.some(i => i.controlled) ? "" : "none";
+  $("grid").classList.toggle("busy", busy);
+  $("profilewarn").classList.toggle("busy", busy);
 
   // rebuild the grid only when the identity set or run-states change
   const sig = JSON.stringify(state.identities.map(i =>
@@ -352,7 +380,9 @@ function render(state) {
         data-focus="${esc(i.id)}"
         title="${i.controlled ? "click to focus this window" : ""}">
         <header><span class="id">${esc(i.id)}</span>
-          <span><span class="dot ${cls}"></span> ${cls}</span></header>
+          <span class="right"><span><span class="dot ${cls}"></span> ${cls}</span>
+            <button class="remove" data-remove="${esc(i.id)}"
+              title="close this window and delete its profile">✕</button></span></header>
         ${view}
         ${note}
         <footer>${esc(i.proxy)} · ${esc(i.os)} · ${esc(i.tz)}<br>…${esc(i.ua_tail)}</footer>

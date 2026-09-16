@@ -3,8 +3,10 @@ Cross-platform core for managing isolated Camoufox identity profiles:
 create/delete/status, driven by the dashboard. Browser discovery goes through
 the camoufox package, so it works on macOS, Windows and Linux.
 
-Each identity is a directory profiles/idN holding the Firefox profile plus a
+Each identity is a directory profiles/<id> holding the Firefox profile plus a
 profile.json with the proxy it was created for and its Camoufox persona env.
+The directory name is the identity id: a short random slug, generated once and
+never reused, so netlogs/<id>.jsonl can only ever hold one persona.
 
 Run '.venv/bin/python -m multifox.core update' to upgrade the camoufox
 package + browser (the packaged app updates itself on startup).
@@ -12,16 +14,24 @@ package + browser (the packaged app updates itself on startup).
 
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 
 from . import paths
-from .personas import camou_config, generate_persona
+from .personas import camou_config, generate_persona, screen_ordinal
 
 MAX_SESSIONS = 100
+
+# Identity ids: digits and consonants only, so no slug reads as a word and
+# none of 0/O/1/l can be misread off the screen.
+IDENT_ALPHABET = "23456789bcdfghjkmnpqrstvwxyz"
+IDENT_LENGTH = 4
 
 # Seconds of random stagger between launches (avoids synchronized first
 # connections). Applied per identity, so ten identities spread over ~25s.
@@ -123,15 +133,26 @@ def effective_entries():
 # -- identities ---------------------------------------------------------------
 
 
+def new_ident():
+    """An unused identity id. Random, never derived from a count, never reused."""
+    while True:
+        ident = "".join(random.choices(IDENT_ALPHABET, k=IDENT_LENGTH))
+        if not (paths.PROFILES / ident).exists():
+            return ident
+
+
+def _least_used_index(count, taken):
+    """Index in range(count) that appears least often in taken; ties go to the lowest."""
+    tally = Counter(taken)
+    return min(range(count), key=lambda i: (tally[i], i))
+
+
 @dataclass
 class Identity:
-    index: int  # 1-based
+    id: str  # also the profile directory name
     proxy: str  # proxies.conf entry this identity was created for
     env: dict  # CAMOU_* persona env for the browser process
-
-    @property
-    def id(self):
-        return f"id{self.index}"
+    created: float  # epoch seconds; the dashboard orders tiles by it
 
     @property
     def dir(self):
@@ -139,13 +160,29 @@ class Identity:
 
     def save(self):
         self.dir.mkdir(parents=True, exist_ok=True)
-        data = {"index": self.index, "proxy": self.proxy, "env": self.env}
+        data = {
+            "id": self.id,
+            "proxy": self.proxy,
+            "created": self.created,
+            "env": self.env,
+        }
         (self.dir / PROFILE_FILE).write_text(json.dumps(data, indent=2) + "\n")
 
     @classmethod
-    def load(cls, profile_file):
+    def load(cls, profile_dir):
+        """Read profiles/<id>/profile.json. The id comes from the directory name.
+
+        created is missing from profiles written before ids became slugs; the
+        mtime of profile.json stands in, since it is written once at creation.
+        """
+        profile_file = profile_dir / PROFILE_FILE
         data = json.loads(profile_file.read_text())
-        return cls(index=int(data["index"]), proxy=data["proxy"], env=dict(data["env"]))
+        return cls(
+            id=profile_dir.name,
+            proxy=data["proxy"],
+            env=dict(data["env"]),
+            created=float(data.get("created") or profile_file.stat().st_mtime),
+        )
 
     def summary(self):
         try:
@@ -169,7 +206,7 @@ class Identity:
 
 
 def scan_profiles():
-    """(identities, names of profile dirs that produced none), ordered by index.
+    """(identities, names of profile dirs that produced none), oldest first.
 
     A profile whose profile.json is missing or unreadable — an interrupted
     creation, or a directory written by an older version — is skipped. Reporting
@@ -180,51 +217,97 @@ def scan_profiles():
         return [], []
     identities, unloadable = [], []
     for entry in sorted(paths.PROFILES.iterdir()):
-        if not entry.is_dir() or not entry.name.startswith("id"):
+        if not entry.is_dir():
             continue
         try:
-            identities.append(Identity.load(entry / PROFILE_FILE))
+            identities.append(Identity.load(entry))
         except (OSError, ValueError, KeyError):
             unloadable.append(entry.name)
-    return sorted(identities, key=lambda ident: ident.index), unloadable
+    return sorted(identities, key=lambda ident: (ident.created, ident.id)), unloadable
 
 
 def load_identities():
-    """All complete identities on disk, ordered by index."""
+    """All complete identities on disk, oldest first."""
     return scan_profiles()[0]
 
 
 def create_profiles(count, log=print, progress=None):
+    """Replace every profile on disk with a fresh set of `count` identities."""
     if not 1 <= count <= MAX_SESSIONS:
         raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {count})")
+    delete_profiles()  # a smaller count must not leave stale profiles behind
+    return add_profiles(count, log, progress=progress)
+
+
+def add_profiles(count, log=print, progress=None):
+    """Create `count` more identities alongside the existing ones; returns them.
+
+    Proxy and screen preset are the least-used ones among the identities
+    already on disk, so both stay spread after identities are removed.
+    """
+    existing, _ = scan_profiles()
+    total = len(existing) + count
+    if count < 1 or total > MAX_SESSIONS:
+        raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {total})")
     entries = effective_entries()
     if not entries:
         raise RuntimeError(f"{paths.PROXY_CONF} has no proxy entries")
     if proxies_enabled():
-        if count > len(entries):
-            log(f"warning: {len(entries)} proxies for {count} identities — egresses repeat (shared IPs link identities)")
+        if total > len(entries):
+            log(f"warning: {len(entries)} proxies for {total} identities — egresses repeat (shared IPs link identities)")
     else:
         log("proxies disabled — every identity connects DIRECTLY (your real IP)")
-    # clear any previous set so a smaller count doesn't leave stale profiles behind
-    delete_profiles()
-    for i in range(count):
+    identities, created = list(existing), []
+    for n in range(1, count + 1):
         if progress:
-            progress(f"Creating identity {i + 1}/{count}", i + 1, count)
-        proxy = entries[i % len(entries)]
+            progress(f"Creating identity {n}/{count}", n, count)
+        proxy = entries[_least_used_index(
+            len(entries), [entries.index(i.proxy) for i in identities if i.proxy in entries]
+        )]
+        ident = new_ident()
         if proxy == "DIRECT" and proxies_enabled():
-            log(f"warning: id{i + 1} will connect DIRECTLY (your real IP)")
-        env, lines = generate_persona(i, proxy)
+            log(f"warning: {ident} will connect DIRECTLY (your real IP)")
+        env, lines = generate_persona(
+            ident, proxy, [screen_ordinal(i.env) for i in identities]
+        )
         for line in lines:
             log(line)
-        Identity(index=i + 1, proxy=proxy, env=env).save()
-    log(f"Done. {count} profiles created.")
+        identity = Identity(id=ident, proxy=proxy, env=env, created=time.time())
+        identity.save()
+        identities.append(identity)
+        created.append(identity)
+    log(f"Done. {count} profile(s) created.")
+    return created
+
+
+def _rmtree(path, attempts=5):
+    """Delete a tree, retrying: Windows can hold a profile file open briefly
+    after the browser process exits."""
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
 
 
 def delete_profiles(log=None):
     if paths.PROFILES.is_dir():
-        shutil.rmtree(paths.PROFILES)
+        _rmtree(paths.PROFILES)
         if log:
             log("profiles deleted — click Start to begin a fresh set")
+
+
+def delete_profile(ident, log=None):
+    """Delete one profiles/<ident> directory. Also removes an unreadable one."""
+    path = (paths.PROFILES / ident).resolve()
+    if path.parent != paths.PROFILES.resolve() or not path.is_dir():
+        raise FileNotFoundError(f"{ident}: no such profile")
+    _rmtree(path)
+    if log:
+        log(f"{ident}: profile deleted")
 
 
 def status():

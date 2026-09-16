@@ -10,7 +10,9 @@ disposable Firefox profile and a unique
 [Camoufox](https://github.com/daijro/camoufox) fingerprint (OS, fonts, WebGL,
 screen, timezone, locale, …), and launches N headed Camoufox windows under
 [Playwright](https://playwright.dev) control. A local dashboard shows a live
-screenshot of every window; click a tile to bring that window to the front.
+screenshot of every window; click a tile to bring that window to the front,
+or its ✕ to close that one window and delete its profile. **Add 1** creates
+one more identity and launches it, without touching the running ones.
 Because the browsers are driven by Playwright, the same setup can later be
 scripted (navigate, read, fill) across all identities at once.
 
@@ -112,7 +114,8 @@ geolocation match its exit IP.
   dir (`~/Library/Application Support/multifox` on macOS, `%APPDATA%\multifox`
   on Windows). From a source checkout: edit `proxies.conf` in the project
   directory.
-- One SOCKS5 `host:port` per line, in identity order (id1, id2, …). Each line
+- One SOCKS5 `host:port` per line. A new identity takes the least-used line,
+  so the lines are handed out evenly. Each line
   must be a **different egress** — two identities sharing an exit IP are
   linked. `DIRECT` means no proxy for that identity.
 - SSH tunnels to your VPSes work well: `ssh -N -D 127.0.0.1:1081 user@vps1`.
@@ -121,12 +124,12 @@ geolocation match its exit IP.
 
 ## Diagnosing a blocked session
 
-Every identity records its HTTP responses to `netlogs/idN.jsonl` in the data
-dir, one JSON object per line. Failed responses keep all their headers, so a
+Every identity records its HTTP responses to `netlogs/<id>.jsonl` in the data
+dir (`<id>` is the short random slug shown on the tile, e.g. `k7m2`), one JSON object per line. Failed responses keep all their headers, so a
 block page can be traced back to the request that produced it:
 
 ```sh
-jq -c 'select(.status != null and .status >= 400)' netlogs/id4.jsonl
+jq -c 'select(.status != null and .status >= 400)' netlogs/k7m2.jsonl
 ```
 
 These logs survive **Stop** (which deletes every profile). Expect roughly
