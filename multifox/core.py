@@ -24,8 +24,8 @@ from .personas import camou_config, generate_persona
 MAX_SESSIONS = 100
 
 # Seconds of random stagger between launches (avoids synchronized first
-# connections). Applied per identity, so ten identities spread over ~50s.
-LAUNCH_STAGGER = 10
+# connections). Applied per identity, so ten identities spread over ~25s.
+LAUNCH_STAGGER = 5
 
 PROFILE_FILE = "profile.json"
 
@@ -168,17 +168,30 @@ class Identity:
         }
 
 
+def scan_profiles():
+    """(identities, names of profile dirs that produced none), ordered by index.
+
+    A profile whose profile.json is missing or unreadable — an interrupted
+    creation, or a directory written by an older version — is skipped. Reporting
+    the skips matters: otherwise the dashboard shows fewer identities than there
+    are directories on disk and says nothing about the gigabytes still there.
+    """
+    if not paths.PROFILES.is_dir():
+        return [], []
+    identities, unloadable = [], []
+    for entry in sorted(paths.PROFILES.iterdir()):
+        if not entry.is_dir() or not entry.name.startswith("id"):
+            continue
+        try:
+            identities.append(Identity.load(entry / PROFILE_FILE))
+        except (OSError, ValueError, KeyError):
+            unloadable.append(entry.name)
+    return sorted(identities, key=lambda ident: ident.index), unloadable
+
+
 def load_identities():
     """All complete identities on disk, ordered by index."""
-    if not paths.PROFILES.is_dir():
-        return []
-    identities = []
-    for profile_file in paths.PROFILES.glob(f"id*/{PROFILE_FILE}"):
-        try:
-            identities.append(Identity.load(profile_file))
-        except (OSError, ValueError, KeyError):
-            continue
-    return sorted(identities, key=lambda ident: ident.index)
+    return scan_profiles()[0]
 
 
 def create_profiles(count, log=print, progress=None):
@@ -216,12 +229,14 @@ def delete_profiles(log=None):
 
 def status():
     raw = proxy_entries()
+    identities, unloadable = scan_profiles()
     return {
         "proxy_entries": len(raw),
         "direct_entries": sum(1 for e in raw if e == "DIRECT"),
         "proxies_enabled": proxies_enabled(),
+        "unloadable": unloadable,
         "identities": [
-            {"id": ident.id, "proxy": ident.proxy, **ident.summary()} for ident in load_identities()
+            {"id": ident.id, "proxy": ident.proxy, **ident.summary()} for ident in identities
         ],
     }
 

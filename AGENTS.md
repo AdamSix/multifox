@@ -171,6 +171,12 @@ count never leaves stale identities behind.
 UI paints that tile red and tells the user to check the window, because a
 crashed page is otherwise indistinguishable from an idle one.
 
+`/api/state` also carries `unloadable`: the `profiles/idN` directories that
+produced no identity. `scan_profiles` returns both lists, and `load_identities`
+is a wrapper over it. Skipping a broken profile silently is not acceptable —
+the identity disappears from the dashboard while its ~80MB directory stays on
+disk — so the UI shows a persistent banner and `_cmd_launch` logs a warning.
+
 Long operations run as background jobs: one at a time, `409` when another is
 already running. A POST returns a job id immediately; the UI polls
 `/api/state`. Any new long operation must go through `App.start_job` and accept

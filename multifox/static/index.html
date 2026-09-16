@@ -96,6 +96,10 @@
     padding: 6px 10px; font-size: 12px; color: #f85149;
     background: #2d1416; border-top: 1px solid #3d1d20;
   }
+  #profilewarn {
+    display: none; margin: 0 0 12px; padding: 8px 12px; border-radius: 6px;
+    font-size: 13px; color: #f0b429; background: #2b2410; border: 1px solid #4a3c12;
+  }
   .shot {
     width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block;
     background: #0d1117; border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
@@ -200,6 +204,7 @@
   </div>
 </div>
 
+<div id="profilewarn"></div>
 <div id="grid"></div>
 <div id="empty" class="empty">no browsers — press Start to begin<br><span class="empty-note">each browser uses your computer's resources — the more you start, the heavier the load, so it's a good idea to close as much as possible first</span></div>
 
@@ -312,6 +317,17 @@ function render(state) {
     if (warnEl) warnEl.scrollTop = warnEl.scrollHeight;
   } else {
     jobEl.style.display = "none";
+  }
+
+  const bad = state.unloadable || [];
+  const warn = $("profilewarn");
+  warn.style.display = bad.length ? "block" : "none";
+  if (bad.length) {
+    warn.innerHTML = `${bad.length} profile folder${bad.length > 1 ? "s" : ""} on disk
+      could not be read and ${bad.length > 1 ? "are" : "is"} being ignored:
+      <b>${bad.map(esc).join(", ")}</b>. ${bad.length > 1 ? "They still take" : "It still takes"}
+      up disk space — press Stop to clear every profile, or delete
+      ${bad.length > 1 ? "them" : "it"} by hand.`;
   }
 
   const busy = (state.jobs || []).some(j => j.status === "running");

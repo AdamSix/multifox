@@ -300,7 +300,12 @@ class Controller:
         self._netlogs.clear()
 
     def _cmd_launch(self, url, log, progress=None):
-        identities = core.load_identities()
+        identities, unloadable = core.scan_profiles()
+        if unloadable:
+            log(
+                f"warning: ignoring {len(unloadable)} unreadable profile(s) "
+                f"({', '.join(unloadable)}) — delete them, or press Stop to clear all"
+            )
         if not identities:
             raise RuntimeError("no profiles found — run create first")
         ff = core.browser_path()
