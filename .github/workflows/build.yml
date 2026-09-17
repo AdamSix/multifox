@@ -26,6 +26,11 @@ jobs:
       # camoufox fetch hits the GitHub releases API; authenticate to avoid
       # the flaky unauthenticated rate limit on shared runner IPs
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # promoted to job-level env so `if:` conditions below can read them —
+      # the `secrets` context isn't allowed directly in `if:` on a
+      # non-reusable workflow
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,9 +41,8 @@ jobs:
       - name: Fetch GeoIP database
         run: .venv/bin/python -c "from camoufox.geolocation import download_mmdb; download_mmdb()"
       - name: Import signing certificate
-        if: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+        if: ${{ env.APPLE_CERTIFICATE_P12 != '' }}
         env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
@@ -53,9 +57,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
           rm -f "$CERT_PATH"
       - name: Decode notarization API key
-        if: ${{ secrets.APPLE_API_KEY_P8 != '' }}
-        env:
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        if: ${{ env.APPLE_API_KEY_P8 != '' }}
         run: |
           echo -n "$APPLE_API_KEY_P8" | base64 --decode -o "$RUNNER_TEMP/apple-api-key.p8"
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
