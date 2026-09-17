@@ -41,7 +41,8 @@ command line needed:
 
 Quick start:
 
-1. Unzip and launch. On macOS the app is unsigned, so it will refuse to open
+1. Unzip and launch. Signed, notarized macOS builds open normally. If you
+   built the app yourself without a signing identity, it will refuse to open
    the first time: right-click → **Open**, or go to System Settings →
    Privacy & Security, scroll down, and click **Open Anyway** (or run
    `xattr -dr com.apple.quarantine /path/to/multifox.app`).
@@ -89,12 +90,25 @@ the PyInstaller specs keep working. Build scripts and specs are in
 `packaging/`; `install.py` stays at the root.
 
 Builds are per-machine (PyInstaller does not cross-compile): build on an
-Apple Silicon Mac for arm64, on an Intel Mac for x86_64. The app is unsigned
-— see the macOS note in Quick start.
+Apple Silicon Mac for arm64, on an Intel Mac for x86_64.
 
-CI builds (`.github/workflows/build.yml`): pushing a tag `v*` builds Apple
-Silicon, Intel, and Windows apps and attaches the zips to a GitHub Release.
-To cut a release:
+macOS signing + notarization (optional): set `MULTIFOX_SIGN_IDENTITY` to a
+"Developer ID Application: Name (TEAMID)" identity in your keychain before
+running `build_app.sh` to codesign the app with the hardened runtime. To also
+notarize, either run
+`xcrun notarytool store-credentials <profile-name>` once and set
+`MULTIFOX_NOTARY_PROFILE` to that name, or set `APPLE_API_KEY_PATH`,
+`APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` to an App Store Connect API key.
+With no signing identity set, the app builds unsigned — see the macOS note in
+Quick start.
+
+CI builds (`.github/workflows/build.yml`) sign and notarize the macOS
+artifacts the same way, reading the identity and credentials from repo
+secrets (`APPLE_SIGNING_IDENTITY`, `APPLE_CERTIFICATE_P12`,
+`APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_API_KEY_P8`,
+`APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) if they're set, and build unsigned
+otherwise. Pushing a tag `v*` builds Apple Silicon, Intel, and Windows apps
+and attaches the zips to a GitHub Release. To cut a release:
 
 ```sh
 git tag v0.4.0 && git push origin v0.4.0

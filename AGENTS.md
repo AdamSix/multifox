@@ -47,8 +47,8 @@ multifox/
   dashboard.py        stdlib http.server on 127.0.0.1:8787 + JSON API
   launcher.py         packaged app: browser install/update, then dashboard in a pywebview window
   static/index.html   the whole UI (one file: markup, CSS, vanilla JS polling /api/state)
-packaging/            PyInstaller specs, build_app.sh / build_app.ps1, icons, screenshots
-.github/workflows/    build.yml — tag v* builds all three platforms and cuts a Release
+packaging/            PyInstaller specs, build_app.sh / build_app.ps1, entitlements.plist, icons, screenshots
+.github/workflows/    build.yml — tag v* builds all three platforms, signs + notarizes macOS, cuts a Release
 ```
 
 Layer rule: `paths` <- `personas` <- `core` <- `controller` <- `app` <-
@@ -118,6 +118,19 @@ them.
   reach packaged users only as a new multifox release.
 - **`multiprocessing.freeze_support()` in `launcher.main`** stops camoufox's
   addon locks from re-launching a second copy of the whole app.
+- **macOS codesign must run on every nested Mach-O binary, not just the
+  `.app` bundle — including binaries shipped as opaque data.** `codesign
+  --deep` is unreliable on a PyInstaller tree this size, so `build_app.sh`'s
+  `sign_tree` walks a bundle and signs bottom-up (loose Mach-O files, then
+  nested `.app`/`.framework` bundles innermost-first, then the outer bundle)
+  before signing the outer `.app`. Apple's notarizer unpacks and checks the
+  bundled Camoufox browser payload zip too, even though PyInstaller treats it
+  as opaque data — `build_app.sh` runs `sign_tree` on the staged payload
+  *before* it gets zipped into `bundle_payload.zip`, not just on the final
+  `.app`. Every signed binary needs the hardened runtime (`--options
+  runtime`) plus `packaging/entitlements.plist`, since Python's frozen
+  interpreter and the bundled native binaries (Camoufox/Playwright/Node)
+  aren't signed by Apple.
 
 ## On-disk state
 
