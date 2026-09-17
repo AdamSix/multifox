@@ -67,28 +67,28 @@ FIREFOX_PREFS = {
     "toolkit.startup.max_resumed_crashes": -1,
     "browser.sessionstore.max_resumed_crashes": -1,
     "dom.security.https_only_mode": True,
+    # Firefox dropped the Do Not Track setting in 135; a current UA that still
+    # sends DNT is a contradiction. GPC is off by default outside private
+    # windows, yet BrowserForge handed it to every identity. personas._patch
+    # spoofs the JS side of both to match.
+    "privacy.donottrackheader.enabled": False,
+    "privacy.globalprivacycontrol.enabled": False,
+    # Set by camoufox's own launcher, which we bypass: the persona carries
+    # webGl/webGl2 parameters that assume both contexts are available.
+    "webgl.enable-webgl2": True,
+    "webgl.force-enabled": True,
 }
 
 
 def identity_prefs(env):
-    """Firefox prefs for one identity: the base set plus what its persona claims.
+    """Firefox prefs for one identity.
 
-    Camoufox spoofs navigator.doNotTrack and navigator.globalPrivacyControl in
-    JS, but the matching headers come from Firefox prefs. Left unset, a browser
-    claims the preference in JS and never sends it — which is what Akamai
-    reported back as 'dnt=unspecified'. BrowserForge randomises both per
-    persona, so this cannot be a fixed pref.
+    Currently the base set for every persona. Kept as the hook for prefs that
+    must follow a persona value: a header pref whose JS counterpart Camoufox
+    spoofs has to agree with it, or the browser claims one thing and sends
+    another.
     """
-    prefs = dict(FIREFOX_PREFS)
-    try:
-        cfg = camou_config(env)
-    except ValueError:
-        return prefs
-    prefs["privacy.donottrackheader.enabled"] = cfg.get("navigator.doNotTrack") == "1"
-    prefs["privacy.globalprivacycontrol.enabled"] = (
-        cfg.get("navigator.globalPrivacyControl") is True
-    )
-    return prefs
+    return dict(FIREFOX_PREFS)
 
 
 # -- proxy settings -----------------------------------------------------------
@@ -231,19 +231,20 @@ def load_identities():
     return scan_profiles()[0]
 
 
-def create_profiles(count, log=print, progress=None):
+def create_profiles(count, log=print, progress=None, cancel=None):
     """Replace every profile on disk with a fresh set of `count` identities."""
     if not 1 <= count <= MAX_SESSIONS:
         raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {count})")
     delete_profiles()  # a smaller count must not leave stale profiles behind
-    return add_profiles(count, log, progress=progress)
+    return add_profiles(count, log, progress=progress, cancel=cancel)
 
 
-def add_profiles(count, log=print, progress=None):
+def add_profiles(count, log=print, progress=None, cancel=None):
     """Create `count` more identities alongside the existing ones; returns them.
 
     Proxy and screen preset are the least-used ones among the identities
     already on disk, so both stay spread after identities are removed.
+    Stops early, returning what was made, once `cancel` (an Event) is set.
     """
     existing, _ = scan_profiles()
     total = len(existing) + count
@@ -259,8 +260,10 @@ def add_profiles(count, log=print, progress=None):
         log("proxies disabled — every identity connects DIRECTLY (your real IP)")
     identities, created = list(existing), []
     for n in range(1, count + 1):
+        if cancel is not None and cancel.is_set():
+            break
         if progress:
-            progress(f"Creating identity {n}/{count}", n, count)
+            progress(f"Creating identity {n}/{count}", n - 1, count)
         proxy = entries[_least_used_index(
             len(entries), [entries.index(i.proxy) for i in identities if i.proxy in entries]
         )]
@@ -276,7 +279,7 @@ def add_profiles(count, log=print, progress=None):
         identity.save()
         identities.append(identity)
         created.append(identity)
-    log(f"Done. {count} profile(s) created.")
+    log(f"Done. {len(created)} profile(s) created.")
     return created
 
 

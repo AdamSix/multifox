@@ -21,8 +21,11 @@ class App:
         self._jobs = []
         self._jobs_lock = threading.Lock()
         self._job_seq = 0
+        self._threads = {}  # job id -> thread, so Stop can wait for a job it cancelled
         self.freshness = {}
         self._ax_prompted = False
+        self.on_job_running = None  # callable(bool), set by the launcher
+        self.cancel = threading.Event()  # set by Stop; long loops exit at their next check
 
     # -- controller -----------------------------------------------------------
 
@@ -51,6 +54,7 @@ class App:
             return {}
 
     def shutdown(self):
+        self.cancel.set()  # a launch in progress winds down instead of holding the quit
         if self._controller is not None:
             try:
                 self._controller.stop(lambda line: None)
@@ -66,11 +70,21 @@ class App:
 
     # -- background jobs ------------------------------------------------------
 
-    def start_job(self, kind, fn, *args):
-        """Run fn(*args, log=..., progress=...) in a background thread; returns (job, error)."""
+    def start_job(self, kind, fn, *args, preempt=False):
+        """Run fn(*args, log=..., progress=...) in a background thread; returns (job, error).
+
+        One job at a time, except a preempting one (Stop): it may start while
+        another runs, sets `cancel` so that job winds down, and is expected to
+        call `wait_for_other_jobs` before touching what the other job builds.
+        """
         with self._jobs_lock:
-            if any(j["status"] == "running" for j in self._jobs):
+            running = [j for j in self._jobs if j["status"] == "running"]
+            if running and (not preempt or any(j["preempt"] for j in running)):
                 return None, "another job is already running"
+            if preempt:
+                self.cancel.set()
+            else:
+                self.cancel.clear()
             self._job_seq += 1
             job = {
                 "id": self._job_seq,
@@ -79,9 +93,12 @@ class App:
                 "log": [],
                 "progress": {"message": "starting…", "current": None, "total": None},
                 "started_at": time.time(),
+                "preempt": preempt,
             }
             self._jobs.append(job)
             del self._jobs[:-10]  # keep the last 10
+            kept = {j["id"] for j in self._jobs}
+            self._threads = {i: t for i, t in self._threads.items() if i in kept}
 
         self._append_log(f"\n=== {kind} job {job['id']} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
@@ -95,6 +112,7 @@ class App:
                 job["progress"] = {"message": str(message), "current": current, "total": total}
 
         def run():
+            self._notify_job_running(True)
             try:
                 fn(*args, log=log, progress=progress)
                 with self._jobs_lock:
@@ -104,9 +122,33 @@ class App:
             except Exception as exc:
                 log(f"error: {exc}")
                 job["status"] = "error"
+            finally:
+                self._notify_job_running(False)
 
-        threading.Thread(target=run, daemon=True).start()
+        thread = threading.Thread(target=run, daemon=True)
+        self._threads[job["id"]] = thread
+        thread.start()
         return job, None
+
+    def wait_for_other_jobs(self, timeout):
+        """Block until every running job but the caller's has finished."""
+        me = threading.current_thread()
+        deadline = time.time() + timeout
+        with self._jobs_lock:
+            others = [
+                self._threads[j["id"]] for j in self._jobs
+                if j["status"] == "running" and self._threads.get(j["id"]) is not me
+            ]
+        for thread in others:
+            thread.join(max(0, deadline - time.time()))
+
+    def _notify_job_running(self, running):
+        if self.on_job_running is None:
+            return
+        try:
+            self.on_job_running(running)
+        except Exception:
+            pass  # a UI nicety must never fail a job
 
     @staticmethod
     def _append_log(line):
@@ -120,20 +162,27 @@ class App:
     # -- operations -----------------------------------------------------------
 
     def start_sessions(self, count, url, log, progress=None):
-        core.create_profiles(count, log, progress=progress)
-        self.controller().launch(url, log, progress=progress)
+        core.create_profiles(count, log, progress=progress, cancel=self.cancel)
+        if self.cancel.is_set():
+            log("cancelled by Stop")
+            return
+        self.controller().launch(url, log, progress=progress, cancel=self.cancel)
 
     def reload_sessions(self, url, log, progress=None):
         self.controller().reload(url, log, progress=progress)
 
     def launch_sessions(self, url, log, progress=None):
-        self.controller().launch(url, log, progress=progress)
+        self.controller().launch(url, log, progress=progress, cancel=self.cancel)
 
     def add_sessions(self, count, url, log, progress=None):
         """Create `count` more identities and launch only those."""
-        created = core.add_profiles(count, log, progress=progress)
+        created = core.add_profiles(count, log, progress=progress, cancel=self.cancel)
+        if self.cancel.is_set():
+            log("cancelled by Stop")
+            return
         self.controller().launch(
-            url, log, progress=progress, only=[ident.id for ident in created]
+            url, log, progress=progress, only=[ident.id for ident in created],
+            cancel=self.cancel,
         )
 
     def remove_session(self, ident, log, progress=None):
@@ -150,6 +199,11 @@ class App:
         core.delete_profile(ident, log)
 
     def stop_all(self, log, progress=None):
+        if progress:
+            progress("Waiting for the running job to wind down…")
+        # A cancelled launch still has to finish the window it is opening, and
+        # a cancelled create must not be mid-write when the wipe starts.
+        self.wait_for_other_jobs(timeout=controller.LAUNCH_STEP_TIMEOUT)
         if progress:
             progress("Closing browser windows…")
         if self._controller is not None:

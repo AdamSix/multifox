@@ -77,7 +77,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/":
-            self._send_bytes((paths.STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
+            # WebKit's disk cache outlives the app, so an update would ship
+            # with the previous release's page.
+            self._send_bytes(
+                (paths.STATIC / "index.html").read_bytes(),
+                "text/html; charset=utf-8", cache="no-store",
+            )
         elif self.path == "/api/state":
             self._send_json(self.app.state())
         elif self.path == "/api/proxies/conf":
@@ -133,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
             url = body.get("url") or "about:blank"
             self._send_job(app.start_job("launch", app.launch_sessions, url))
         elif self.path == "/api/stop":
-            self._send_job(app.start_job("stop", app.stop_all))
+            self._send_job(app.start_job("stop", app.stop_all, preempt=True))
         elif self.path == "/api/focus":
             ident = body.get("id")
             if ident not in app.controlled_idents():

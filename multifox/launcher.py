@@ -27,6 +27,11 @@ from .app import App
 
 DISPLAY_NAME = "multifox"
 
+# A Firefox window activates itself a moment after Playwright reports it
+# launched, so the last one of a job would land in front if the pin dropped
+# with the job.
+UNPIN_DELAY = 3
+
 SPLASH_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
   body { background: #1c1c1e; color: #e5e5ea; margin: 0; padding: 20px;
@@ -58,6 +63,8 @@ class Launcher:
             DISPLAY_NAME, html=SPLASH_HTML, width=1200, height=850, min_size=(720, 500)
         )
         self.app = App()
+        self.app.on_job_running = self._keep_in_front
+        self._pin_seq = 0
         self.server = None
 
     # -- ui plumbing (worker thread -> webview) --------------------------------
@@ -78,6 +85,24 @@ class Launcher:
 
     def set_status(self, text):
         self._js(f"mfoxStatus({json.dumps(str(text))})")
+
+    def _keep_in_front(self, running):
+        """Pin the dashboard above other windows while a job runs.
+
+        Every Firefox window activates itself on launch and would otherwise
+        cover the dashboard. Pinning needs no Accessibility access, unlike
+        raising a window after the fact. The pin is released UNPIN_DELAY
+        after the job, unless another job has started by then.
+        """
+        self._pin_seq += 1
+        if running:
+            self.window.on_top = True
+            return
+        threading.Timer(UNPIN_DELAY, self._unpin, args=(self._pin_seq,)).start()
+
+    def _unpin(self, seq):
+        if seq == self._pin_seq:
+            self.window.on_top = False
 
     # -- startup sequence (worker thread) --------------------------------------
 

@@ -28,6 +28,11 @@ from . import core, paths
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
+PAGE_LOAD_TIMEOUT = 60000  # ms, per goto/reload
+# Longest one window can hold the driver thread: stagger + launch + page load.
+# Stop waits at most this long for a cancelled launch to finish its window.
+LAUNCH_STEP_TIMEOUT = 120
+LONG_COMMANDS = frozenset({"launch", "reload", "stop", "close"})
 
 # Consecutive screenshot failures before an identity is reported as dead. A
 # crashed or closed page otherwise looks identical to an idle one in the UI.
@@ -49,31 +54,71 @@ NETLOG_MAX_PER_KEY = 20
 NETLOG_MAX_BYTES = 16 * 1024 * 1024
 
 # Headers kept for successful responses. Failures record every header instead,
-# because the reason for a block usually only appears there.
+# because the reason for a block usually only appears there. Set-Cookie is
+# handled separately, one entry per cookie (see _set_cookies).
 NETLOG_HEADERS = frozenset({
     "akamai-grn",
     "content-type",
     "retry-after",
     "server",
     "server-timing",
-    "set-cookie",
     "x-akamai-request-id",
     "x-akamai-transformed",
     "x-cache",
     "x-reference-error",
 })
 
+# Bot-vendor cookies whose value carries the verdict. Recorded from the Cookie
+# header of every request, since a block often arrives as a 200 challenge page.
+# Akamai's _abck reads hash~valid~sensor~-1~-1: a second field of 0 means the
+# sensor validated, -1 means it did not.
+BOT_COOKIES = frozenset({
+    "_abck", "bm_sz", "ak_bmsc", "bm_sv", "bm_mi",  # Akamai
+    "datadome",  # DataDome
+    "_px3", "_pxvid", "_pxhd",  # HUMAN / PerimeterX
+})
+
+# The verdict sits in the first 100 characters of _abck; the rest is sensor blob.
+NETLOG_MAX_COOKIE = 100
+
+
+def _clip(value, limit):
+    return value if len(value) <= limit else value[:limit] + f"…(+{len(value) - limit}B)"
+
 
 def _clip_headers(headers, keep=None):
     """Header dict with long values truncated, optionally limited to `keep` names."""
     clipped = {}
     for name, value in headers.items():
-        if keep is not None and name not in keep:
+        if name == "set-cookie" or (keep is not None and name not in keep):
             continue
-        clipped[name] = value if len(value) <= NETLOG_MAX_HEADER else (
-            value[:NETLOG_MAX_HEADER] + f"…(+{len(value) - NETLOG_MAX_HEADER}B)"
-        )
+        clipped[name] = _clip(value, NETLOG_MAX_HEADER)
     return clipped
+
+
+def _bot_cookies(cookie_header):
+    """{name: clipped value} of the BOT_COOKIES present in a Cookie header."""
+    found = {}
+    for part in cookie_header.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name in BOT_COOKIES:
+            found[name] = _clip(value, NETLOG_MAX_COOKIE)
+    return found
+
+
+def _set_cookies(response):
+    """Each Set-Cookie header of a response, clipped per cookie.
+
+    response.headers merges repeated Set-Cookie values into one string, so a
+    single clip would drop every cookie after the first; headers_array keeps
+    them apart. Only called when the merged view shows a Set-Cookie at all,
+    since headers_array is a round trip to the browser.
+    """
+    return [
+        _clip(h["value"], NETLOG_MAX_HEADER)
+        for h in response.headers_array()
+        if h["name"].lower() == "set-cookie"
+    ]
 
 
 def accessibility_trusted(prompt=False):
@@ -164,6 +209,7 @@ def _raise_os_window(profile_dir):
 class Controller:
     def __init__(self):
         self._commands = queue.Queue()
+        self._running = None  # name of the command the driver thread is executing
         self._ready = threading.Event()
         self._start_error = None
         self._thread = threading.Thread(target=self._run, name="pw-driver", daemon=True)
@@ -186,14 +232,18 @@ class Controller:
             return
         self._contexts = {}  # ident -> {"ctx", "page", "proxy", "shot": (ts, bytes)}
         self._netlogs = {}  # ident -> open netlogs/<ident>.jsonl handle
+        self._netlog_emit = {}  # ident -> emit(entry) into that netlog, with its caps
         self._ready.set()
         while True:
             name, args, result_q = self._commands.get()
+            self._running = name
             try:
                 handler = getattr(self, f"_cmd_{name}")
                 result_q.put((True, handler(*args)))
             except Exception as exc:
                 result_q.put((False, exc))
+            finally:
+                self._running = None
 
     def _dispatch(self, name, *args, timeout=COMMAND_TIMEOUT):
         result_q = queue.Queue()
@@ -219,6 +269,7 @@ class Controller:
         self._netlogs[ident] = handle
         written = {"bytes": 0, "stopped": False}
         seen = {}
+        last_cookies = {}
 
         def emit(entry):
             entry["t"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -253,6 +304,7 @@ class Controller:
                 return
             emit(entry)
 
+        self._netlog_emit[ident] = emit
         emit({"event": "launch", "ident": ident})
 
         def on_response(response):
@@ -266,11 +318,21 @@ class Controller:
                     "url": response.url,
                     "type": request.resource_type,
                 }
+                headers = response.headers
                 if response.ok:
-                    entry["headers"] = _clip_headers(response.headers, NETLOG_HEADERS)
+                    entry["headers"] = _clip_headers(headers, NETLOG_HEADERS)
                 else:
-                    entry["headers"] = _clip_headers(response.headers)
+                    entry["headers"] = _clip_headers(headers)
                     entry["request_headers"] = _clip_headers(request.headers)
+                if "set-cookie" in headers:
+                    entry["set_cookie"] = _set_cookies(response)
+                # Only when the values change: the same map on every request
+                # of a page load buries the one where the verdict flipped.
+                cookies = _bot_cookies(request.headers.get("cookie", ""))
+                if cookies and cookies != last_cookies:
+                    last_cookies.clear()
+                    last_cookies.update(cookies)
+                    entry["cookies"] = cookies
             except Exception:
                 return  # an exception here would surface on the driver thread
             record(entry)
@@ -298,8 +360,32 @@ class Controller:
             except OSError:
                 pass
         self._netlogs.clear()
+        self._netlog_emit.clear()
 
-    def _cmd_launch(self, url, log, progress=None, only=None):
+    def _log_dead_cookies(self, ident, entry):
+        """Write the bot-vendor cookies from the jar once an identity turns dead.
+
+        The final verdict may have arrived in a response the netlog skipped or
+        clipped; the jar holds whatever the browser ended up with.
+        """
+        emit = self._netlog_emit.get(ident)
+        if emit is None:
+            return
+        try:
+            jar = entry["ctx"].cookies()
+        except Exception as exc:
+            emit({"event": "dead", "error": str(exc).splitlines()[0][:200]})
+            return
+        emit({
+            "event": "dead",
+            "cookies": {
+                c["name"]: _clip(c["value"], NETLOG_MAX_COOKIE)
+                for c in jar
+                if c["name"] in BOT_COOKIES
+            },
+        })
+
+    def _cmd_launch(self, url, log, progress=None, only=None, cancel=None):
         identities, unloadable = core.scan_profiles()
         if unloadable:
             log(
@@ -311,19 +397,34 @@ class Controller:
         if not identities:
             raise RuntimeError("no profiles found — run create first")
         ff = core.browser_path()
+        total = len(identities)
         launched = 0
+        cancelled = cancel.is_set if cancel is not None else lambda: False
         for n, ident in enumerate(identities, 1):
+            if cancelled():
+                log("cancelled by Stop")
+                break
             if ident.id in self._contexts:
                 log(f"{ident.id}: already controlled, skipping")
                 continue
             if progress:
-                progress(f"Launching window {n}/{len(identities)}", n, len(identities))
+                progress(f"Launching window {n}/{total}", n - 1, total)
             if core.LAUNCH_STAGGER > 0:
-                time.sleep(random.randint(0, core.LAUNCH_STAGGER))
+                delay = random.randint(0, core.LAUNCH_STAGGER)
+                if cancel is not None:
+                    if cancel.wait(delay):
+                        log("cancelled by Stop")
+                        break
+                else:
+                    time.sleep(delay)
             kwargs = {
                 "user_data_dir": str(ident.dir),
                 "executable_path": ff,
                 "headless": False,
+                # Without this Playwright emulates a 1280x720 viewport in every
+                # window, so innerWidth contradicts the persona's outerWidth
+                # and is identical across identities.
+                "no_viewport": True,
                 "env": {**os.environ, **ident.env},
                 "firefox_user_prefs": core.identity_prefs(ident.env),
             }
@@ -334,7 +435,9 @@ class Controller:
                 self._attach_netlog(ident.id, ctx)
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 if url and url != "about:blank":
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    if progress:
+                        progress(f"Loading page in window {n}/{total}", n - 1, total)
+                    page.goto(url, wait_until="domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
                 self._contexts[ident.id] = {
                     "ctx": ctx, "page": page, "shot": None, "fails": 0, "error": None,
                 }
@@ -342,7 +445,9 @@ class Controller:
                 log(f"launched {ident.id} (controlled)")
             except Exception as exc:
                 log(f"error: {ident.id} failed to launch: {exc}")
-        log(f"All {launched}/{len(identities)} identities controlled.")
+        if progress:
+            progress(f"Launched {launched}/{total} windows", total, total)
+        log(f"All {launched}/{total} identities controlled.")
         return launched
 
     def _cmd_screenshot(self, ident):
@@ -357,20 +462,13 @@ class Controller:
         except Exception as exc:
             entry["fails"] += 1
             entry["error"] = str(exc).splitlines()[0][:200]
+            if entry["fails"] == SHOT_FAILURES_BEFORE_DEAD:
+                self._log_dead_cookies(ident, entry)
             return None  # page closed or crashed; next poll retries
         entry["fails"] = 0
         entry["error"] = None
         entry["shot"] = (time.time(), data)
         return data
-
-    def _cmd_health(self):
-        return {
-            ident: {
-                "dead": entry["fails"] >= SHOT_FAILURES_BEFORE_DEAD,
-                "error": entry["error"],
-            }
-            for ident, entry in self._contexts.items()
-        }
 
     def _cmd_focus(self, ident):
         entry = self._contexts.get(ident)
@@ -388,22 +486,25 @@ class Controller:
         contexts = list(self._contexts.items())
         for n, (ident, entry) in enumerate(contexts, 1):
             if progress:
-                progress(f"Reloading window {n}/{len(contexts)}", n, len(contexts))
+                progress(f"Reloading window {n}/{len(contexts)}", n - 1, len(contexts))
             try:
                 if url and url != "about:blank":
-                    entry["page"].goto(url, wait_until="domcontentloaded", timeout=60000)
+                    entry["page"].goto(url, wait_until="domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
                 else:
-                    entry["page"].reload(wait_until="domcontentloaded", timeout=60000)
+                    entry["page"].reload(wait_until="domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
                 entry["shot"] = None
                 log(f"reloaded {ident}")
             except Exception as exc:
                 log(f"error: {ident} failed to reload: {exc}")
+        if progress:
+            progress(f"Reloaded {len(contexts)} windows", len(contexts), len(contexts))
         return len(self._contexts)
 
     def _cmd_close(self, ident, log):
         """Close one identity's context and its netlog. False if it wasn't controlled."""
         entry = self._contexts.pop(ident, None)
         handle = self._netlogs.pop(ident, None)
+        self._netlog_emit.pop(ident, None)
         if handle is not None:
             try:
                 handle.close()
@@ -431,16 +532,19 @@ class Controller:
             log(f"closed {count} controlled contexts")
         return count
 
-    def _cmd_controlled(self):
-        return list(self._contexts)
-
     # -- public API (any thread) ---------------------------------------------
 
-    def launch(self, url, log, progress=None, only=None):
+    def launch(self, url, log, progress=None, only=None, cancel=None):
         # generous timeout: stagger + N context launches
-        return self._dispatch("launch", url, log, progress, only, timeout=3600)
+        return self._dispatch("launch", url, log, progress, only, cancel, timeout=3600)
 
     def screenshot(self, ident):
+        # While a long command holds the driver thread, a dispatched shot would
+        # wait behind it and tie up one of the browser's few connections to the
+        # dashboard; enough of those and the state poll and Stop POST queue too.
+        if self._running in LONG_COMMANDS:
+            entry = self._contexts.get(ident)
+            return entry["shot"][1] if entry and entry["shot"] else None
         return self._dispatch("screenshot", ident)
 
     def focus(self, ident):
@@ -455,9 +559,20 @@ class Controller:
     def stop(self, log):
         return self._dispatch("stop", log, timeout=120)
 
+    # The two readers below do not go through _dispatch: a launch occupies the
+    # driver thread for minutes and every /api/state poll would wait behind it,
+    # freezing the progress bar. They only read plain values from _contexts,
+    # never a Playwright object, so the thread rule is not broken.
+
     def controlled_idents(self):
-        return self._dispatch("controlled")
+        return list(self._contexts)
 
     def health(self):
-        return self._dispatch("health")
+        return {
+            ident: {
+                "dead": entry["fails"] >= SHOT_FAILURES_BEFORE_DEAD,
+                "error": entry["error"],
+            }
+            for ident, entry in list(self._contexts.items())
+        }
 

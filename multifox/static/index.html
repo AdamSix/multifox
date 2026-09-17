@@ -164,6 +164,13 @@
     border-radius: 6px; padding: 8px 10px; font: 13px/1.5 "SF Mono", Menlo, monospace;
   }
   #modal .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+  /* Inline instead of alert()/confirm(): a native dialog opens at normal window
+     level, behind the dashboard while it is pinned during a job. */
+  #notice {
+    display: none; margin: 12px auto 0; padding: 8px 14px; max-width: 560px;
+    background: #2d1b1b; border: 1px solid #f85149; border-radius: 8px;
+    color: #f85149; font-size: 13px; text-align: center;
+  }
 </style>
 </head>
 <body>
@@ -184,9 +191,11 @@
   <span class="actions">
     <button id="add" style="display:none" title="create one more identity and launch it">Add 1</button>
     <button id="start">Start</button>
-    <button id="stop" class="danger">Stop</button>
+    <button id="stop" class="danger" title="close every window and delete every profile">Stop</button>
   </span>
 </div>
+
+<div id="notice"></div>
 
 <div id="job">
   <button id="openlog" class="log-btn" title="open the full log in your text editor">full log</button>
@@ -225,6 +234,15 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let lastSig = null;
+let noticeTimer = null;
+
+function notify(text) {
+  const el = $("notice");
+  el.textContent = text;
+  el.style.display = "block";
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.style.display = "none"; }, 8000);
+}
 
 async function api(path, body) {
   const res = await fetch(path, {
@@ -233,15 +251,13 @@ async function api(path, body) {
     body: JSON.stringify(body || {}),
   });
   const data = await res.json();
-  if (!res.ok) alert(data.error || res.statusText);
+  if (!res.ok) notify(data.error || res.statusText);
   refresh();
 }
 
 $("start").onclick = () => api("/api/start", {count: +$("count").value, url: $("url").value});
 $("add").onclick = () => api("/api/add", {url: $("url").value});
-$("stop").onclick = () => {
-  if (confirm("Kill all identity instances and DELETE the profiles?")) api("/api/stop");
-};
+$("stop").onclick = () => api("/api/stop");
 $("proxytoggle").onchange = () => api("/api/proxies", {enabled: $("proxytoggle").checked});
 $("openlog").onclick = () => api("/api/open-log");
 
@@ -262,8 +278,8 @@ document.addEventListener("click", async (e) => {
     body: JSON.stringify({id: tile.dataset.focus}),
   });
   const data = await res.json();
-  if (!res.ok) alert(data.error || res.statusText);
-  else if (data.detail && data.detail.startsWith("warning:")) alert(data.detail);
+  if (!res.ok) notify(data.error || res.statusText);
+  else if (data.detail && data.detail.startsWith("warning:")) notify(data.detail);
 });
 
 const overlay = $("modal-overlay");
@@ -281,7 +297,7 @@ $("proxysave").onclick = async () => {
     body: JSON.stringify({text: $("proxyconf").value}),
   });
   const data = await res.json();
-  if (!res.ok) alert(data.error || res.statusText);
+  if (!res.ok) notify(data.error || res.statusText);
   else overlay.classList.remove("open");
   refresh();
 };
@@ -355,8 +371,9 @@ function render(state) {
   }
 
   const busy = (state.jobs || []).some(j => j.status === "running");
+  const stopping = (state.jobs || []).some(j => j.status === "running" && j.kind === "stop");
   $("start").disabled = busy;
-  $("stop").disabled = busy;
+  $("stop").disabled = stopping;
   $("add").disabled = busy;
   $("add").style.display = state.identities.some(i => i.controlled) ? "" : "none";
   $("grid").classList.toggle("busy", busy);

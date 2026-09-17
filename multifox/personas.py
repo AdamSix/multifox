@@ -17,6 +17,7 @@ gets a unique randomly-generated BrowserForge fingerprint.
 import json
 import random
 import sys
+import warnings
 from collections import Counter
 
 # The OS this copy of multifox is actually running on. Camoufox spoofs what
@@ -50,11 +51,25 @@ else:
 # The generator is asked for an exact size, because given a range it picks
 # sizes no device ships (1376x774), and a resolution that does not exist is
 # trivial for a page to check. Not every size has a matching fingerprint, so
-# generation walks the list until one works.
+# generation walks the list until one works. Only sizes that fit the host
+# display are offered (see _fitting_screens): the real window is sized to the
+# persona's outer dimensions and the OS clamps it to the display, so a larger
+# claim leaves innerWidth far below the spoofed outerWidth.
 SCREENS = [
     (1920, 1080), (1680, 1050), (1536, 864), (1440, 900), (2560, 1440),
     (1920, 1200), (1600, 900), (1366, 768), (1280, 800), (2560, 1600),
+    (1512, 982), (1728, 1117),
 ]
+
+# Sizes no device of that OS ships. 1366x768 is a budget Windows panel and
+# 1536x864 is 1920x1080 at 125% Windows scaling; a Mac reports neither, and
+# at devicePixelRatio 2 they would imply panels that do not exist. 1512x982
+# and 1728x1117 are the 14" and 16" MacBook Pro logical sizes, which no
+# Windows laptop reports.
+SCREENS_NOT_ON = {
+    "macos": {(1366, 768), (1536, 864)},
+    "windows": {(1512, 982), (1728, 1117)},
+}
 
 # Desktop chrome reserved per OS, as (availLeft, availTop, reserved height).
 # Camoufox has its own work-area correction, but it still emits an availLeft
@@ -110,8 +125,34 @@ def screen_ordinal(env):
     return SCREENS.index(size) if size in SCREENS else None
 
 
-def _screen_order(in_use):
-    """SCREENS indices, least-used first, ties by index.
+def _host_display():
+    """(width, height) of the largest attached display in CSS pixels, or None."""
+    try:
+        from camoufox.display import largest_display
+
+        display = largest_display()
+    except Exception:  # older camoufox, no screen, enumeration failed
+        return None
+    return (display.width, display.height) if display else None
+
+
+def _fitting_screens(os_persona):
+    """SCREENS indices that exist on os_persona and fit the host display.
+
+    Falls back to every size for the OS if none fits the display.
+    """
+    excluded = SCREENS_NOT_ON.get(os_persona, set())
+    for_os = [i for i, size in enumerate(SCREENS) if size not in excluded]
+    display = _host_display()
+    if display is None:
+        return for_os
+    width, height = display
+    fitting = [i for i in for_os if SCREENS[i][0] <= width and SCREENS[i][1] <= height]
+    return fitting or for_os
+
+
+def _screen_order(in_use, os_persona):
+    """Fitting SCREENS indices, least-used first, ties by index.
 
     The whole order matters, not just the first choice: not every size has a
     fingerprint for every OS, so generation falls through to the next entry.
@@ -119,7 +160,7 @@ def _screen_order(in_use):
     spread; walking the list in order landed two identities on the same size.
     """
     tally = Counter(o for o in in_use if o is not None)
-    return sorted(range(len(SCREENS)), key=lambda i: (tally[i], i))
+    return sorted(_fitting_screens(os_persona), key=lambda i: (tally[i], i))
 
 
 def _generate(order, os_persona, kwargs):
@@ -172,14 +213,21 @@ def _patch_locale(cfg):
 
 
 def _patch(cfg, os_persona):
-    """Repair the work area, the locale and a missing oscpu, in place.
+    """Repair the work area, the locale, DNT and a missing oscpu, in place.
 
     Applied after generation rather than through launch_options(config=...):
     camoufox reads which domains the caller set and skips its own corrections
     for those, so passing one screen.* key would disable its screen clamping
     and taskbar fix wholesale.
+
+    BrowserForge data predates Firefox 135, which removed Do Not Track, so it
+    still hands out doNotTrack "1", and it gave every identity GPC, which
+    Firefox only enables in private windows. The browser sends neither header
+    (see core.FIREFOX_PREFS), so the JS values must say so too.
     """
     _patch_locale(cfg)
+    cfg["navigator.doNotTrack"] = "unspecified"
+    cfg["navigator.globalPrivacyControl"] = False
     cfg.setdefault("navigator.oscpu", OSCPU[os_persona])
     width, height = cfg.get("screen.width"), cfg.get("screen.height")
     if not width or not height:
@@ -218,11 +266,10 @@ def generate_persona(ident, proxy, screens_in_use=()):
     """
     lines = []
     os_persona = random.choice(OS_PERSONAS)
-    order = _screen_order(screens_in_use)
+    order = _screen_order(screens_in_use, os_persona)
     kwargs = {
         "os": os_persona,
         "block_webrtc": True,
-        "i_know_what_im_doing": True,
         # Looked up through the proxy when there is one, over the direct
         # connection otherwise: a DIRECT identity that reports the host
         # timezone while claiming another region contradicts its own exit IP.
@@ -231,14 +278,20 @@ def generate_persona(ident, proxy, screens_in_use=()):
     if proxy != "DIRECT":
         kwargs["proxy"] = {"server": f"socks5://{proxy}"}
 
-    try:
-        opts = _generate(order, os_persona, kwargs)
-    except NoUsableScreen:
-        raise
-    except Exception as exc:  # proxy down, GeoIP DB missing, offline, etc.
-        lines.append(f"{ident}: GeoIP lookup failed ({exc}); falling back to random locale")
-        del kwargs["geoip"]
-        opts = _generate(order, os_persona, kwargs)
+    # Camoufox warns (LeakWarning) when a kwarg can make the persona
+    # detectable. Those go to stderr by default, where nobody sees them; the
+    # job log is where they belong.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            opts = _generate(order, os_persona, kwargs)
+        except NoUsableScreen:
+            raise
+        except Exception as exc:  # proxy down, GeoIP DB missing, offline, etc.
+            lines.append(f"{ident}: GeoIP lookup failed ({exc}); falling back to random locale")
+            del kwargs["geoip"]
+            opts = _generate(order, os_persona, kwargs)
+    lines.extend(f"warning: {ident}: camoufox: {w.message}" for w in caught)
 
     env = {k: str(v) for k, v in opts["env"].items() if k.startswith("CAMOU_")}
     if not env:
