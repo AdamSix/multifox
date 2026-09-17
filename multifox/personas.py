@@ -95,6 +95,139 @@ OSCPU = {
 # every platform, so the patched config uses it unconditionally.
 CONFIG_CHUNK = 2047
 
+# -- proxies ------------------------------------------------------------------
+
+# Schemes Playwright accepts in its proxy `server` option.
+PROXY_SCHEMES = ("http", "https", "socks4", "socks5", "socks5h")
+
+# What an entry means when it names no scheme, and how long a probe may take.
+DEFAULT_PROXY_SCHEME = "socks5"
+PROXY_PROBE_TIMEOUT = 15
+
+
+class InvalidProxy(ValueError):
+    """A proxies.conf line that cannot be read as a proxy."""
+
+
+def parse_proxy(entry):
+    """(scheme or None, host, port, username, password) for a proxies.conf entry.
+
+    Accepts, each optionally prefixed with `scheme://`:
+
+        DIRECT                 no proxy at all -> returns None
+        host:port              anonymous, the original format
+        host:port:user:pass    what residential providers hand out
+        user:pass@host:port    the URL spelling of the same thing
+
+    The password is taken as everything after the third colon, so one that
+    contains a colon survives. Raises InvalidProxy on anything else, naming the
+    line: an unparsed entry used to reach Firefox as `socks5://<whole line>`,
+    which it reported as NS_ERROR_UNKNOWN_PROXY_HOST — an error that reads like
+    the proxy is down when the line simply was not understood.
+    """
+    text = entry.strip()
+    if not text or text.upper() == "DIRECT":
+        return None
+    scheme = None
+    if "://" in text:
+        scheme, _, text = text.partition("://")
+        scheme = scheme.lower()
+        if scheme not in PROXY_SCHEMES:
+            raise InvalidProxy(f"{entry}: unsupported scheme '{scheme}://'")
+    username = password = None
+    if "@" in text:
+        # rpartition, so an '@' inside the password does not split the host off
+        credentials, _, text = text.rpartition("@")
+        username, separator, password = credentials.partition(":")
+        if not separator:
+            raise InvalidProxy(f"{entry}: credentials before '@' must be user:pass")
+    fields = text.split(":", 3)
+    if len(fields) == 2:
+        host, port = fields
+    elif len(fields) == 4 and username is None:
+        host, port, username, password = fields
+    else:
+        raise InvalidProxy(
+            f"{entry}: expected host:port, host:port:user:pass or user:pass@host:port"
+        )
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise InvalidProxy(f"{entry}: '{host}:{port}' is not a host and port")
+    return scheme, host, port, username or None, password
+
+
+def proxy_label(entry):
+    """`entry` with any password removed, for logs, the dashboard and profile.json."""
+    try:
+        parsed = parse_proxy(entry)
+    except InvalidProxy:
+        return entry.split(":")[0] + ":…"
+    if parsed is None:
+        return "DIRECT"
+    scheme, host, port, username, _ = parsed
+    shown = f"{scheme}://{host}:{port}" if scheme else f"{host}:{port}"
+    return f"{shown} ({username})" if username else shown
+
+
+_SCHEME_CACHE = {}
+
+
+def _detect_scheme(host, port, username, password, log=None):
+    """Whichever scheme the endpoint speaks, or None if it answers neither.
+
+    One host:port from a residential provider commonly answers HTTP CONNECT,
+    SOCKS5, or both, and the entry says nothing about which. Guessing wrong
+    does not fail cleanly -- Firefox either reports an unrelated-looking proxy
+    error or hangs -- so probe once per endpoint and remember. requests and
+    PySocks both arrive with camoufox.
+    """
+    key = (host, port)
+    if key in _SCHEME_CACHE:
+        return _SCHEME_CACHE[key]
+    import requests
+    from urllib.parse import quote
+
+    credentials = ""
+    if username:
+        credentials = f"{quote(username, safe='')}:{quote(password or '', safe='')}@"
+    found = None
+    # socks5h, not socks5: resolve names at the exit, the way camoufox's
+    # network.proxy.socks_remote_dns pref makes Firefox do.
+    for scheme, probe_scheme in (("http", "http"), ("socks5", "socks5h")):
+        url = f"{probe_scheme}://{credentials}{host}:{port}"
+        try:
+            requests.get(
+                "https://api.ipify.org",
+                proxies={"http": url, "https": url},
+                timeout=PROXY_PROBE_TIMEOUT,
+            )
+        except Exception:
+            continue
+        found = scheme
+        break
+    _SCHEME_CACHE[key] = found
+    if log:
+        log(
+            f"{host}:{port} speaks {found}" if found else
+            f"warning: {host}:{port} answered neither HTTP nor SOCKS5 — assuming "
+            f"{DEFAULT_PROXY_SCHEME}; check the host, port and your network"
+        )
+    return found
+
+
+def resolve_proxy(entry, log=None):
+    """Playwright proxy dict for a proxies.conf entry, or None for DIRECT."""
+    parsed = parse_proxy(entry)
+    if parsed is None:
+        return None
+    scheme, host, port, username, password = parsed
+    if scheme is None:
+        scheme = _detect_scheme(host, port, username, password, log) or DEFAULT_PROXY_SCHEME
+    proxy = {"server": f"{scheme}://{host}:{port}"}
+    if username is not None:
+        proxy["username"] = username
+        proxy["password"] = password or ""
+    return proxy
+
 
 class NoUsableScreen(RuntimeError):
     """No size in SCREENS has a generatable fingerprint for this OS."""
@@ -275,8 +408,9 @@ def generate_persona(ident, proxy, screens_in_use=()):
         # timezone while claiming another region contradicts its own exit IP.
         "geoip": True,
     }
-    if proxy != "DIRECT":
-        kwargs["proxy"] = {"server": f"socks5://{proxy}"}
+    proxy_config = resolve_proxy(proxy, lines.append)
+    if proxy_config:
+        kwargs["proxy"] = proxy_config
 
     # Camoufox warns (LeakWarning) when a kwarg can make the persona
     # detectable. Those go to stderr by default, where nobody sees them; the

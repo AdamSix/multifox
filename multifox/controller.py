@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import core, paths
+from . import core, paths, personas
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
@@ -428,8 +428,9 @@ class Controller:
                 "env": {**os.environ, **ident.env},
                 "firefox_user_prefs": core.identity_prefs(ident.env),
             }
-            if ident.proxy != "DIRECT":
-                kwargs["proxy"] = {"server": f"socks5://{ident.proxy}"}
+            proxy_config = personas.resolve_proxy(ident.proxy, log)
+            if proxy_config:
+                kwargs["proxy"] = proxy_config
             try:
                 ctx = self._pw.firefox.launch_persistent_context(**kwargs)
                 self._attach_netlog(ident.id, ctx)

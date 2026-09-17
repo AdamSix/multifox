@@ -29,7 +29,8 @@ Use case: testing how a site behaves for many distinct visitors at once —
 anti-bot / fingerprint checks, geo and A/B QA, several logins that must not
 share cookies or a fingerprint.
 
-Per-identity SOCKS5 exit IPs are implemented but **experimental and untested**.
+Per-identity proxy exit IPs (HTTP or SOCKS5, with or without credentials) are
+implemented but **experimental**.
 The default is direct (no proxy) for every identity.
 
 ## Architecture
@@ -132,6 +133,17 @@ them.
   them. This is not a shared-value tell: it is the value nearly every real
   visitor from that region has, while a rare one stands out per identity.
 
+- **A proxy entry names a protocol only if the user typed one, so it is
+  probed, not assumed.** `proxies.conf` was SOCKS5-only, and the launch built
+  `socks5://<whole line>`. Given the `host:port:user:pass` every residential
+  provider hands out, that reached Firefox as one very long hostname and came
+  back as `NS_ERROR_UNKNOWN_PROXY_HOST` — an error that reads like a dead
+  proxy, not an unparsed line. `personas.parse_proxy` now understands the four
+  forms, and `resolve_proxy` probes an endpoint that named no scheme with
+  `requests` (HTTP CONNECT, then SOCKS5) and caches the answer per host:port,
+  because one residential endpoint commonly answers both and nothing in the
+  line says which. Guessing wrong does not fail cleanly. `add_profiles`
+  rejects unparseable lines before writing any profile, naming each one.
 - **Identity ids carry no order, so two things must supply it.** Tiles sort by
   `created` from `profile.json`. Live contexts sort by insertion order in
   `Controller._contexts`, which is launch order. Nothing may parse a number out
@@ -208,9 +220,14 @@ Under `paths.HOME` (`~/Library/Application Support/multifox` on macOS,
   profile written before ids became slugs still loads. `created` orders the
   dashboard tiles; without it they would reshuffle on every poll, and it falls
   back to the mtime of `profile.json`.
-- `proxies.conf` — one SOCKS5 `host:port` or `DIRECT` per line. Comments start
+- `proxies.conf` — one proxy or `DIRECT` per line, parsed by
+  `personas.parse_proxy`: `host:port`, `host:port:user:pass`,
+  `user:pass@host:port`, each optionally prefixed with a scheme. Comments start
   with `#`. A new identity takes the least-used line, not the line at its
-  position: identities have no position once one can be removed.
+  position: identities have no position once one can be removed. The raw line,
+  password included, is what `profile.json` stores and what
+  `_least_used_index` compares; `personas.proxy_label` is the form that reaches
+  logs and `/api/state`, since the dashboard page reads the latter.
 - `settings.json` — `{"proxies": bool}` only.
 - `dashboard.log`, `launcher.log` — full job logs; the UI shows progress plus
   lines matching warning/error/fail.
