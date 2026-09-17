@@ -55,9 +55,19 @@ else:
 # display are offered (see _fitting_screens): the real window is sized to the
 # persona's outer dimensions and the OS clamps it to the display, so a larger
 # claim leaves innerWidth far below the spoofed outerWidth.
+#
+# A size only belongs here if BrowserForge either produces it or refuses it.
+# The exact constraint is not guaranteed: partial_csp drops a filter it cannot
+# satisfy rather than raising (strict=False), and the returned fingerprint is
+# then clamped per axis to the requested bounds, which can mix the width of one
+# real panel with the height of another. 1600x900 was removed for that -- 9 of
+# 40 macOS draws came back as another size, two of them 1512x900, a 14"
+# MacBook Pro width with a height no Mac reports, and three as 1366x768, which
+# SCREENS_NOT_ON excludes from macOS precisely because a Mac never reports it.
+# Measure before adding an entry; a preset that misses is worse than no preset.
 SCREENS = [
     (1920, 1080), (1680, 1050), (1536, 864), (1440, 900), (2560, 1440),
-    (1920, 1200), (1600, 900), (1366, 768), (1280, 800), (2560, 1600),
+    (1920, 1200), (1366, 768), (1280, 800), (2560, 1600),
     (1512, 982), (1728, 1117),
 ]
 
@@ -439,6 +449,8 @@ def _patch(cfg, os_persona):
     still hands out doNotTrack "1", and it gave every identity GPC, which
     Firefox only enables in private windows. The browser sends neither header
     (see core.FIREFOX_PREFS), so the JS values must say so too.
+
+    The window position is dropped rather than repaired; see below.
     """
     _patch_locale(cfg)
     cfg["navigator.doNotTrack"] = "unspecified"
@@ -458,9 +470,17 @@ def _patch(cfg, os_persona):
     ):
         if cfg.get(key) and cfg[key] > limit:
             cfg[key] = limit
-    for key, floor in (("window.screenX", left), ("window.screenY", top)):
-        if cfg.get(key) is not None and cfg[key] < floor:
-            cfg[key] = floor
+    # Claim no window position at all. Firefox also exposes the real position
+    # through window.mozInnerScreenX/Y, which Camoufox spoofs nowhere and
+    # nothing here moves the window to match, so a spoofed screenX/screenY can
+    # only ever be contradicted by the window it describes. Worse, the value
+    # was the same for every identity -- the generator emits 0,0 when the pool
+    # record has no position, and this function used to raise that to the work
+    # area corner -- so all of them shared one contradiction, and a shared
+    # anomaly groups identities far better than a shared commonplace does.
+    # Unset, both readings come from the real window and agree by construction.
+    cfg.pop("window.screenX", None)
+    cfg.pop("window.screenY", None)
 
 
 def _chunk(cfg, env):

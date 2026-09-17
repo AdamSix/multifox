@@ -183,6 +183,27 @@ them.
   the OS is used rather than failing. `generate_persona` no longer passes
   `i_know_what_im_doing`, so camoufox's `LeakWarning`s are captured and
   written to the job log instead of being silenced.
+- **An exact screen constraint is a request, not a guarantee, so measure a
+  preset before adding it.** BrowserForge's `partial_csp` deletes a filter it
+  cannot satisfy instead of raising (it is built with `strict=False`), and the
+  fingerprint it then returns is clamped per axis to the requested bounds --
+  which can pair one real panel's width with another's height. Measured at 40
+  draws per preset: most either match exactly or raise (the walk handles
+  raising), but 1600x900 missed 9 times on macOS, twice landing on 1512x900 --
+  a 14" MacBook Pro width at a height no Mac reports -- and three times on
+  1366x768, which `SCREENS_NOT_ON` excludes from macOS. It was removed for
+  that. 2560x1600 misses 25 of 40 on Windows, but only ever onto other real
+  Windows sizes, so it stays; it costs spread, not coherence.
+- **The persona claims no window position.** `window.screenX`/`screenY` are
+  popped in `_patch`. Firefox also reports the real position through
+  `window.mozInnerScreenX/Y`, which Camoufox spoofs nowhere and nothing here
+  moves the window to match, so a claimed position could only ever be
+  contradicted by the window it describes. It was also the *same* claim for
+  every identity (the generator emits 0,0 with no pool position, and `_patch`
+  used to raise that to the work-area corner), and a contradiction shared by
+  every identity groups them better than a shared ordinary value would.
+  Unset, both readings come from the real window. Do not reintroduce a
+  position without also moving the window to it on all three platforms.
 - **`GPUS_NOT_ON` in `personas.py` rejects a GPU the persona OS never
   shipped.** The generator draws `webGl:renderer` independently of the `os`
   kwarg, so about 6% of macOS personas claimed `Intel(R) HD Graphics 400` —
