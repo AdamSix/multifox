@@ -88,6 +88,15 @@ them.
   claimed backend. Linux hosts are the unresolved exception — no `"linux"`
   persona exists (its font set ships no base Latin family), so they still get
   the old cross-OS mix and keep the host-mismatch tell open.
+- **The persona language is pinned, not random.** Camoufox picks the locale
+  language at random from the CLDR speaker share of the GeoIP region. That
+  share counts who speaks a language, not who browses in it, so 14% of UK
+  identities loaded pages in French. `_patch_locale` overwrites
+  `locale:language` / `locale:script` / `locale:all` with the region's
+  most-spoken language, leaving region, timezone and geolocation as GeoIP set
+  them. This is not a shared-value tell: it is the value nearly every real
+  visitor from that region has, while a rare one stands out per identity.
+
 - **Identity ids carry no order, so two things must supply it.** Tiles sort by
   `created` from `profile.json`. Live contexts sort by insertion order in
   `Controller._contexts`, which is launch order. Nothing may parse a number out

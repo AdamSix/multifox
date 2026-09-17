@@ -4,9 +4,10 @@ Generate one Camoufox persona per identity (called by core.create_profiles).
 Asks the camoufox python package to build a full fingerprint config
 (BrowserForge-generated, matching real-world device distributions). A GeoIP
 lookup runs through the identity's proxy, or over the direct connection when it
-has none, so timezone / locale / geolocation match the exit IP. The resulting
-CAMOU_* environment variables are stored in the identity's profile.json and set
-on the browser process at launch.
+has none, so timezone / locale / geolocation match the exit IP. The language of
+that locale is then pinned to the region's most-spoken one (see
+_patch_locale). The resulting CAMOU_* environment variables are stored in the
+identity's profile.json and set on the browser process at launch.
 
 The caller picks the least-used screen preset for each new identity, so the
 presets stay spread as identities are added and removed. Every identity still
@@ -141,14 +142,44 @@ def _generate(order, os_persona, kwargs):
     raise NoUsableScreen(f"no usable screen size for os={os_persona}")
 
 
+def _patch_locale(cfg):
+    """Replace the persona language with the region's most-spoken one, in place.
+
+    Camoufox draws the language at random from the CLDR speaker share of the
+    GeoIP region, but that share counts who *speaks* a language, not who runs
+    a browser in it: it gave 14% of UK identities fr-GB, which no real UK
+    Firefox sends. Taking the top language instead is not a shared-value tell,
+    because it is the value almost every real visitor from that region has.
+
+    Region, script, timezone and geolocation still come from GeoIP, so an
+    identity behind a proxy stays consistent with its exit IP.
+    """
+    from camoufox.locales import SELECTOR, normalize_locale
+
+    region = cfg.get("locale:region")
+    if not region:
+        return
+    try:
+        # Private, but the public entry point picks at random by design.
+        languages, weights = SELECTOR._load_territory_data(region)
+        locale = normalize_locale(
+            f"{str(languages[int(weights.argmax())]).replace('_', '-')}-{region}"
+        )
+    except Exception:  # unknown territory, no language data, camoufox change
+        return
+    cfg.update(locale.as_config())
+    cfg["locale:all"] = f"{locale.as_string}, {locale.language}"
+
+
 def _patch(cfg, os_persona):
-    """Repair the work area and fill in a missing oscpu, in place.
+    """Repair the work area, the locale and a missing oscpu, in place.
 
     Applied after generation rather than through launch_options(config=...):
     camoufox reads which domains the caller set and skips its own corrections
     for those, so passing one screen.* key would disable its screen clamping
     and taskbar fix wholesale.
     """
+    _patch_locale(cfg)
     cfg.setdefault("navigator.oscpu", OSCPU[os_persona])
     width, height = cfg.get("screen.width"), cfg.get("screen.height")
     if not width or not height:
@@ -218,5 +249,6 @@ def generate_persona(ident, proxy, screens_in_use=()):
     env = _chunk(cfg, env)
     ua = cfg.get("navigator.userAgent", "?")
     tz = cfg.get("timezone", cfg.get("int:timezone", "?"))
-    lines.append(f"{ident}: {os_persona:7s} tz={tz}  ua=...{ua[-40:]}")
+    loc = cfg.get("locale:all", "?")
+    lines.append(f"{ident}: {os_persona:7s} tz={tz}  loc={loc}  ua=...{ua[-40:]}")
     return env, lines
