@@ -130,7 +130,15 @@ them.
   `.app`. Every signed binary needs the hardened runtime (`--options
   runtime`) plus `packaging/entitlements.plist`, since Python's frozen
   interpreter and the bundled native binaries (Camoufox/Playwright/Node)
-  aren't signed by Apple.
+  aren't signed by Apple. Within one directory, dylibs must be signed before
+  any executable that links against them by a same-directory relative
+  path — Camoufox's own `camoufox` binary links `libmozavcodec.dylib` this
+  way, and codesign refuses to sign an executable whose linked dylib isn't
+  signed yet. `find`'s enumeration order isn't guaranteed to put dylibs
+  first, so `sign_tree` signs all `*.dylib`/`*.so` in a scope before any
+  other executable there. This only reproduced on one CI runner
+  (`macos-15-intel`), not locally or on `macos-14` — don't assume a clean
+  local run means the signing order is safe.
 
 ## On-disk state
 

@@ -32,13 +32,24 @@ ENTITLEMENTS="$ROOT/packaging/entitlements.plist"
 # hardened runtime + a secure timestamp on every executable in the tree, not
 # just the outer app — including binaries shipped as opaque data (e.g. the
 # Camoufox browser payload zip, which the notarizer unpacks to check).
+sign_file() {
+  file -b "$1" | grep -q "Mach-O" || return 0
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$1"
+}
 sign_tree() {
   local root="$1"
   while IFS= read -r -d '' bundle; do
+    # dylibs/.so first: some executables here (e.g. Camoufox's own binary)
+    # link against a same-directory dylib via a relative path, and codesign
+    # refuses to sign an executable whose linked dylib isn't signed yet.
+    # find's ordering isn't guaranteed to put dylibs first on its own (this
+    # bit us only on one CI runner, not locally), so force it explicitly.
     while IFS= read -r -d '' f; do
-      file -b "$f" | grep -q "Mach-O" || continue
-      codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$f"
-    done < <(find "$bundle" -mindepth 1 \( -name "*.app" -o -name "*.framework" \) -prune -o -type f -print0)
+      sign_file "$f"
+    done < <(find "$bundle" -mindepth 1 \( -name "*.app" -o -name "*.framework" \) -prune -o -type f \( -name "*.dylib" -o -name "*.so" \) -print0)
+    while IFS= read -r -d '' f; do
+      sign_file "$f"
+    done < <(find "$bundle" -mindepth 1 \( -name "*.app" -o -name "*.framework" \) -prune -o -type f -not -name "*.dylib" -not -name "*.so" -print0)
     codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$bundle"
   done < <(find "$root" \( -name "*.app" -o -name "*.framework" \) -depth -print0)
 }
