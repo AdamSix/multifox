@@ -13,6 +13,7 @@ driver thread; callers dispatch commands through a queue and wait on results.
 The controller must outlive the sessions: closing it closes the browsers.
 """
 
+import datetime
 import json
 import os
 import queue
@@ -272,7 +273,11 @@ class Controller:
         last_cookies = {}
 
         def emit(entry):
-            entry["t"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            # Local time *with* its UTC offset. A bare local timestamp cannot
+            # be lined up against the Date header of the response it describes,
+            # which is always GMT, so every correlation is silently off by the
+            # host's offset.
+            entry["t"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
             try:
                 line = json.dumps(entry) + "\n"
             except (ValueError, TypeError):

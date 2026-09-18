@@ -268,7 +268,10 @@ Under `paths.NETLOGS` (`netlogs/` beside `profiles/`):
 
 - `netlogs/<id>.jsonl` — one JSON object per response, written by the Playwright
   context. A `{"event": "launch"}` line marks each run, since the file is
-  appended across runs. Successful image/font/media/stylesheet responses are
+  appended across runs. Every line carries `t`, local time **with its UTC
+  offset** (`2026-09-18T08:55:42+01:00`); it must stay offset-aware, because
+  the whole point of the file is lining entries up against response `Date`
+  headers, which are always GMT. Successful image/font/media/stylesheet responses are
   skipped. A successful response keeps only the headers in `NETLOG_HEADERS`; a
   failed one keeps every response header plus the request headers, because that
   is where a block explains itself. Network failures are recorded with
