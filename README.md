@@ -141,6 +141,11 @@ proxy so the identity's timezone, locale, and geolocation match its exit IP.
   `socks4://`. Without one, multifox probes the endpoint on first use and picks
   whichever of HTTP and SOCKS5 it answers, then says which in the log. A
   password may contain `:` or `@`.
+- **A line with credentials always goes over HTTP, never SOCKS.** Playwright
+  refuses to authenticate to a SOCKS proxy — it throws
+  `Browser does not support socks5 proxy authentication` before the browser is
+  even asked. A provider offering only authenticated SOCKS5 cannot be used;
+  ask for an HTTP endpoint or an IP-whitelisted one.
 - A new identity takes the least-used line, so the lines are handed out
   evenly. Each line must be a **different egress** — two identities sharing an
   exit IP are linked.

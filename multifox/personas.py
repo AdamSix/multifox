@@ -100,8 +100,12 @@ CONFIG_CHUNK = 2047
 # Schemes Playwright accepts in its proxy `server` option.
 PROXY_SCHEMES = ("http", "https", "socks4", "socks5", "socks5h")
 
-# What an entry means when it names no scheme, and how long a probe may take.
+# What an entry means when it names no scheme and the probe could not reach it.
+# Anonymous entries keep the documented SOCKS5 default. Entries with
+# credentials fall back to HTTP instead, because Playwright refuses to
+# authenticate to a SOCKS proxy at all (see resolve_proxy).
 DEFAULT_PROXY_SCHEME = "socks5"
+AUTHENTICATED_FALLBACK_SCHEME = "http"
 PROXY_PROBE_TIMEOUT = 15
 
 
@@ -205,23 +209,48 @@ def _detect_scheme(host, port, username, password, log=None):
         found = scheme
         break
     _SCHEME_CACHE[key] = found
-    if log:
-        log(
-            f"{host}:{port} speaks {found}" if found else
-            f"warning: {host}:{port} answered neither HTTP nor SOCKS5 — assuming "
-            f"{DEFAULT_PROXY_SCHEME}; check the host, port and your network"
-        )
+    if found and log:
+        log(f"{host}:{port} speaks {found}")
     return found
 
 
 def resolve_proxy(entry, log=None):
-    """Playwright proxy dict for a proxies.conf entry, or None for DIRECT."""
+    """Playwright proxy dict for a proxies.conf entry, or None for DIRECT.
+
+    Credentials force an HTTP-family scheme. Playwright rejects them outright
+    on a SOCKS proxy -- `Browser does not support socks5 proxy authentication`,
+    thrown before the browser is even asked -- so an authenticated entry that
+    ends up on socks5 cannot launch, whatever the endpoint supports.
+    """
     parsed = parse_proxy(entry)
     if parsed is None:
         return None
     scheme, host, port, username, password = parsed
+    if username is not None and scheme and scheme.startswith("socks"):
+        raise InvalidProxy(
+            f"{host}:{port}: Playwright cannot authenticate to a SOCKS proxy. "
+            f"Use http:// or https:// for a proxy with a username and password, "
+            f"or drop the credentials."
+        )
     if scheme is None:
-        scheme = _detect_scheme(host, port, username, password, log) or DEFAULT_PROXY_SCHEME
+        fallback = AUTHENTICATED_FALLBACK_SCHEME if username else DEFAULT_PROXY_SCHEME
+        scheme = _detect_scheme(host, port, username, password, log)
+        if scheme is None:
+            scheme = fallback
+            if log:
+                log(
+                    f"warning: {host}:{port} answered neither HTTP nor SOCKS5 — "
+                    f"assuming {fallback}; check the host, port, the credentials "
+                    f"and whether this machine can reach that port"
+                )
+        elif username is not None and scheme.startswith("socks"):
+            # The endpoint answered SOCKS5 but not HTTP, and it needs a login
+            # Playwright will not send. Nothing here can make that work.
+            raise InvalidProxy(
+                f"{host}:{port}: only answers SOCKS5, and Playwright cannot "
+                f"authenticate to a SOCKS proxy. Ask the provider for an HTTP "
+                f"endpoint, or use an unauthenticated (IP-whitelisted) one."
+            )
     proxy = {"server": f"{scheme}://{host}:{port}"}
     if username is not None:
         proxy["username"] = username

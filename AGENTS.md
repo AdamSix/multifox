@@ -144,6 +144,15 @@ them.
   because one residential endpoint commonly answers both and nothing in the
   line says which. Guessing wrong does not fail cleanly. `add_profiles`
   rejects unparseable lines before writing any profile, naming each one.
+  **Credentials force an HTTP-family scheme.** Playwright throws
+  `Browser does not support socks5 proxy authentication` (and the socks4
+  equivalent) in `coreBundle.js` before the browser is asked, so an
+  authenticated entry on a SOCKS scheme can never launch, whatever the
+  endpoint supports. `resolve_proxy` therefore falls back to `http` rather
+  than `socks5` when an authenticated endpoint cannot be probed, and raises
+  with an explanation when a SOCKS scheme is given — or detected — alongside
+  a username. A provider that only offers authenticated SOCKS5 cannot be used
+  through Playwright at all; it needs an HTTP endpoint or IP whitelisting.
 - **Identity ids carry no order, so two things must supply it.** Tiles sort by
   `created` from `profile.json`. Live contexts sort by insertion order in
   `Controller._contexts`, which is launch order. Nothing may parse a number out
