@@ -90,6 +90,18 @@ them.
   `confirm()` is on a tile's remove button, which is disabled during a job.
 - **The controller must outlive the sessions.** Closing it closes the browsers.
   So the dashboard process has to stay alive for the whole session.
+- **`_contexts` is the only handle on a live browser, so a context must never
+  exist outside it.** `_cmd_launch` runs three steps after
+  `launch_persistent_context` returns — `_attach_netlog`, `new_page` and the
+  first `goto` — and a failure in any of them used to leave the context
+  launched but unregistered. `stop()` and `close()` only walk `_contexts`, so
+  that window could not be closed by anything short of quitting the app, and
+  the orphan went on writing to its profile directory and recreated the
+  directory Stop had just deleted, which the next Start reported as an
+  unreadable profile. `_cmd_launch` now clears its local `ctx` only once the
+  entry is in `_contexts`, and hands anything still held to
+  `_discard_context`. Any new step added between launch and registration must
+  stay inside that `try`.
 - **Playwright event handlers run on the driver thread.** The `response` and
   `requestfailed` handlers in `_attach_netlog` swallow every exception for that
   reason: one raised there would surface inside the driver loop. Keep any new
