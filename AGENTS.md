@@ -171,6 +171,17 @@ them.
   the OS is used rather than failing. `generate_persona` no longer passes
   `i_know_what_im_doing`, so camoufox's `LeakWarning`s are captured and
   written to the job log instead of being silenced.
+- **`GPUS_NOT_ON` in `personas.py` rejects a GPU the persona OS never
+  shipped.** The generator draws `webGl:renderer` independently of the `os`
+  kwarg, so about 6% of macOS personas claimed `Intel(R) HD Graphics 400` —
+  Braswell silicon that shipped in Windows and Linux netbooks and in no Mac
+  ever. A page reads that next to `navigator.platform` through
+  `WEBGL_debug_renderer_info`, so it is the same kind of contradiction
+  `SCREENS_NOT_ON` already removes. `_generate` redraws up to `GPU_ATTEMPTS`
+  times per screen size and keeps the first draw if every attempt is
+  impossible, so a future data set with no valid GPU for an OS degrades
+  instead of failing creation. The list is per-OS on purpose: HD Graphics 400
+  is a legitimate renderer for a Windows or Linux persona and must stay.
 - **Never pass `screen.*` or `navigator.*` through `launch_options(config=)`.**
   Camoufox records which domains the caller set and then skips its own
   corrections for them: `clamp_screen_to_display`, `fix_screen_no_taskbar`,

@@ -71,6 +71,29 @@ SCREENS_NOT_ON = {
     "windows": {(1512, 982), (1728, 1117)},
 }
 
+# GPU models no machine of that OS ever shipped, matched as a substring of
+# webGl:renderer. The generator draws the renderer independently of the OS, so
+# it can hand a macOS persona a GPU that has never existed in a Mac -- the same
+# class of contradiction as SCREENS_NOT_ON, and readable by any page through
+# WEBGL_debug_renderer_info next to navigator.platform.
+#
+# Intel HD Graphics 400 is Braswell (Atom x5/x7, Celeron/Pentium N3000, 2015).
+# It shipped in Windows and Linux netbooks, so it is legitimate there; Apple
+# never used Braswell in any Mac. Measured on camoufox 0.5.6 / browserforge
+# 1.2.4, it comes up in roughly 6% of generated macOS personas.
+#
+# Substring, not equality: the generator appends ", or similar" to most
+# renderer strings and Windows wraps the model in an ANGLE(...) string.
+GPUS_NOT_ON = {
+    "macos": ("Intel(R) HD Graphics 400",),
+}
+
+# Fresh fingerprints to draw before giving up and keeping one whose GPU its OS
+# never shipped. Each launch_options() call redraws the GPU, so a handful of
+# attempts makes keeping a bad one negligible (0.06**6 for macOS) while
+# bounding the work when a future data set has no valid GPU for an OS at all.
+GPU_ATTEMPTS = 6
+
 # Desktop chrome reserved per OS, as (availLeft, availTop, reserved height).
 # Camoufox has its own work-area correction, but it still emits an availLeft
 # equal to the screen width on some draws, which cannot happen: a work area
@@ -325,11 +348,34 @@ def _screen_order(in_use, os_persona):
     return sorted(_fitting_screens(os_persona), key=lambda i: (tally[i], i))
 
 
+def _impossible_gpu(cfg, os_persona):
+    """The persona's webGl:renderer, when os_persona never shipped that GPU."""
+    renderer = str(cfg.get("webGl:renderer") or "")
+    for model in GPUS_NOT_ON.get(os_persona, ()):
+        if model in renderer:
+            return renderer
+    return None
+
+
+def _options_config(opts):
+    """The camoufox config dict carried by a launch_options() result."""
+    return camou_config(
+        {k: str(v) for k, v in opts["env"].items() if k.startswith("CAMOU_")}
+    )
+
+
 def _generate(order, os_persona, kwargs):
-    """launch_options with an exact screen size, trying `order` until one works."""
+    """launch_options with an exact screen size, trying `order` until one works.
+
+    Redraws up to GPU_ATTEMPTS times per size when the fingerprint names a GPU
+    os_persona never shipped (see GPUS_NOT_ON). If every draw is impossible the
+    first one is kept: a persona with an odd GPU still beats no persona at all,
+    and failing creation over it would be a worse trade.
+    """
     from browserforge.fingerprints import Screen
     from camoufox.utils import launch_options
 
+    fallback = None
     for index in order:
         width, height = SCREENS[index]
         attempt = dict(
@@ -338,10 +384,17 @@ def _generate(order, os_persona, kwargs):
                 min_width=width, max_width=width, min_height=height, max_height=height
             ),
         )
-        try:
-            return launch_options(**attempt)
-        except ValueError:
-            continue  # no fingerprint for this size; try the next one
+        for _ in range(GPU_ATTEMPTS):
+            try:
+                opts = launch_options(**attempt)
+            except ValueError:
+                break  # no fingerprint for this size; try the next one
+            if not _impossible_gpu(_options_config(opts), os_persona):
+                return opts
+            if fallback is None:
+                fallback = opts
+    if fallback is not None:
+        return fallback
     raise NoUsableScreen(f"no usable screen size for os={os_persona}")
 
 
