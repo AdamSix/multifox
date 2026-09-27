@@ -206,14 +206,17 @@
   <div id="modal">
     <h2>Proxy settings</h2>
     <p>
-      Each identity routes all its traffic through its own SOCKS5 proxy, so
+      Each identity routes all its traffic through its own proxy, so
       every identity gets a different exit IP. When you press Start, a GeoIP
       lookup is sent through each proxy so the identity's timezone, locale and
       geolocation match its exit IP — <b>the proxies must be up at that moment</b>.
     </p>
     <p>
-      Format: one <code>host:port</code> per line, in identity order
-      (id1, id2, …). Lines starting with <code>#</code> are comments.
+      One proxy per line: <code>host:port</code>,
+      <code>host:port:user:pass</code>, or <code>user:pass@host:port</code>.
+      Add <code>http://</code> or <code>socks5://</code> in front to force a
+      protocol; without one, multifox probes the endpoint and uses whichever it
+      answers. Lines starting with <code>#</code> are comments, and
       <code>DIRECT</code> means no proxy for that identity (your real IP).
       Two identities sharing an exit IP are linked, so every line should be a
       different egress — e.g. SSH tunnels: <code>ssh -N -D 127.0.0.1:1081 user@vps1</code>,

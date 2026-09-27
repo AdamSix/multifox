@@ -29,7 +29,8 @@ Use case: testing how a site behaves for many distinct visitors at once —
 anti-bot / fingerprint checks, geo and A/B QA, several logins that must not
 share cookies or a fingerprint.
 
-Per-identity SOCKS5 exit IPs are implemented but **experimental and untested**.
+Per-identity proxy exit IPs (HTTP or SOCKS5, with or without credentials) are
+implemented but **experimental**.
 The default is direct (no proxy) for every identity.
 
 ## Architecture
@@ -89,6 +90,18 @@ them.
   `confirm()` is on a tile's remove button, which is disabled during a job.
 - **The controller must outlive the sessions.** Closing it closes the browsers.
   So the dashboard process has to stay alive for the whole session.
+- **`_contexts` is the only handle on a live browser, so a context must never
+  exist outside it.** `_cmd_launch` runs three steps after
+  `launch_persistent_context` returns — `_attach_netlog`, `new_page` and the
+  first `goto` — and a failure in any of them used to leave the context
+  launched but unregistered. `stop()` and `close()` only walk `_contexts`, so
+  that window could not be closed by anything short of quitting the app, and
+  the orphan went on writing to its profile directory and recreated the
+  directory Stop had just deleted, which the next Start reported as an
+  unreadable profile. `_cmd_launch` now clears its local `ctx` only once the
+  entry is in `_contexts`, and hands anything still held to
+  `_discard_context`. Any new step added between launch and registration must
+  stay inside that `try`.
 - **Playwright event handlers run on the driver thread.** The `response` and
   `requestfailed` handlers in `_attach_netlog` swallow every exception for that
   reason: one raised there would surface inside the driver loop. Keep any new
@@ -132,6 +145,35 @@ them.
   them. This is not a shared-value tell: it is the value nearly every real
   visitor from that region has, while a rare one stands out per identity.
 
+- **A proxy entry names a protocol only if the user typed one, so it is
+  probed, not assumed.** `proxies.conf` was SOCKS5-only, and the launch built
+  `socks5://<whole line>`. Given the `host:port:user:pass` every residential
+  provider hands out, that reached Firefox as one very long hostname and came
+  back as `NS_ERROR_UNKNOWN_PROXY_HOST` — an error that reads like a dead
+  proxy, not an unparsed line. `personas.parse_proxy` now understands the four
+  forms, and `resolve_proxy` probes an endpoint that named no scheme with
+  `requests` (HTTP CONNECT, then SOCKS5) and caches the answer per host:port,
+  because one residential endpoint commonly answers both and nothing in the
+  line says which. Guessing wrong does not fail cleanly. `add_profiles`
+  rejects unusable lines before writing any profile, naming each one — via
+  `check_proxy`, which is `parse_proxy` plus every rule decidable without the
+  network. Syntax alone is not enough for a pre-flight check:
+  `socks5://host:port:user:pass` parses perfectly and still cannot launch, and
+  when only `resolve_proxy` knew that, the raise landed on the identity that
+  drew the line, mid-loop, with earlier profiles already written. The probe
+  stays in `resolve_proxy` because it needs a connection and can answer
+  differently between runs, so **both call sites must handle a raise from it**:
+  `_cmd_launch` resolves inside its per-identity `try`, since outside it one
+  bad line left every remaining identity unlaunched.
+  **Credentials force an HTTP-family scheme.** Playwright throws
+  `Browser does not support socks5 proxy authentication` (and the socks4
+  equivalent) in `coreBundle.js` before the browser is asked, so an
+  authenticated entry on a SOCKS scheme can never launch, whatever the
+  endpoint supports. `resolve_proxy` therefore falls back to `http` rather
+  than `socks5` when an authenticated endpoint cannot be probed, and raises
+  with an explanation when a SOCKS scheme is given — or detected — alongside
+  a username. A provider that only offers authenticated SOCKS5 cannot be used
+  through Playwright at all; it needs an HTTP endpoint or IP whitelisting.
 - **Identity ids carry no order, so two things must supply it.** Tiles sort by
   `created` from `profile.json`. Live contexts sort by insertion order in
   `Controller._contexts`, which is launch order. Nothing may parse a number out
@@ -150,6 +192,38 @@ them.
   the OS is used rather than failing. `generate_persona` no longer passes
   `i_know_what_im_doing`, so camoufox's `LeakWarning`s are captured and
   written to the job log instead of being silenced.
+- **An exact screen constraint is a request, not a guarantee, so measure a
+  preset before adding it.** BrowserForge's `partial_csp` deletes a filter it
+  cannot satisfy instead of raising (it is built with `strict=False`), and the
+  fingerprint it then returns is clamped per axis to the requested bounds --
+  which can pair one real panel's width with another's height. Measured at 40
+  draws per preset: most either match exactly or raise (the walk handles
+  raising), but 1600x900 missed 9 times on macOS, twice landing on 1512x900 --
+  a 14" MacBook Pro width at a height no Mac reports -- and three times on
+  1366x768, which `SCREENS_NOT_ON` excludes from macOS. It was removed for
+  that. 2560x1600 misses 25 of 40 on Windows, but only ever onto other real
+  Windows sizes, so it stays; it costs spread, not coherence.
+- **The persona claims no window position.** `window.screenX`/`screenY` are
+  popped in `_patch`. Firefox also reports the real position through
+  `window.mozInnerScreenX/Y`, which Camoufox spoofs nowhere and nothing here
+  moves the window to match, so a claimed position could only ever be
+  contradicted by the window it describes. It was also the *same* claim for
+  every identity (the generator emits 0,0 with no pool position, and `_patch`
+  used to raise that to the work-area corner), and a contradiction shared by
+  every identity groups them better than a shared ordinary value would.
+  Unset, both readings come from the real window. Do not reintroduce a
+  position without also moving the window to it on all three platforms.
+- **`GPUS_NOT_ON` in `personas.py` rejects a GPU the persona OS never
+  shipped.** The generator draws `webGl:renderer` independently of the `os`
+  kwarg, so about 6% of macOS personas claimed `Intel(R) HD Graphics 400` —
+  Braswell silicon that shipped in Windows and Linux netbooks and in no Mac
+  ever. A page reads that next to `navigator.platform` through
+  `WEBGL_debug_renderer_info`, so it is the same kind of contradiction
+  `SCREENS_NOT_ON` already removes. `_generate` redraws up to `GPU_ATTEMPTS`
+  times per screen size and keeps the first draw if every attempt is
+  impossible, so a future data set with no valid GPU for an OS degrades
+  instead of failing creation. The list is per-OS on purpose: HD Graphics 400
+  is a legitimate renderer for a Windows or Linux persona and must stay.
 - **Never pass `screen.*` or `navigator.*` through `launch_options(config=)`.**
   Camoufox records which domains the caller set and then skips its own
   corrections for them: `clamp_screen_to_display`, `fix_screen_no_taskbar`,
@@ -208,9 +282,14 @@ Under `paths.HOME` (`~/Library/Application Support/multifox` on macOS,
   profile written before ids became slugs still loads. `created` orders the
   dashboard tiles; without it they would reshuffle on every poll, and it falls
   back to the mtime of `profile.json`.
-- `proxies.conf` — one SOCKS5 `host:port` or `DIRECT` per line. Comments start
+- `proxies.conf` — one proxy or `DIRECT` per line, parsed by
+  `personas.parse_proxy`: `host:port`, `host:port:user:pass`,
+  `user:pass@host:port`, each optionally prefixed with a scheme. Comments start
   with `#`. A new identity takes the least-used line, not the line at its
-  position: identities have no position once one can be removed.
+  position: identities have no position once one can be removed. The raw line,
+  password included, is what `profile.json` stores and what
+  `_least_used_index` compares; `personas.proxy_label` is the form that reaches
+  logs and `/api/state`, since the dashboard page reads the latter.
 - `settings.json` — `{"proxies": bool}` only.
 - `dashboard.log`, `launcher.log` — full job logs; the UI shows progress plus
   lines matching warning/error/fail.
@@ -219,7 +298,10 @@ Under `paths.NETLOGS` (`netlogs/` beside `profiles/`):
 
 - `netlogs/<id>.jsonl` — one JSON object per response, written by the Playwright
   context. A `{"event": "launch"}` line marks each run, since the file is
-  appended across runs. Successful image/font/media/stylesheet responses are
+  appended across runs. Every line carries `t`, local time **with its UTC
+  offset** (`2026-09-18T08:55:42+01:00`); it must stay offset-aware, because
+  the whole point of the file is lining entries up against response `Date`
+  headers, which are always GMT. Successful image/font/media/stylesheet responses are
   skipped. A successful response keeps only the headers in `NETLOG_HEADERS`; a
   failed one keeps every response header plus the request headers, because that
   is where a block explains itself. Network failures are recorded with

@@ -55,9 +55,19 @@ else:
 # display are offered (see _fitting_screens): the real window is sized to the
 # persona's outer dimensions and the OS clamps it to the display, so a larger
 # claim leaves innerWidth far below the spoofed outerWidth.
+#
+# A size only belongs here if BrowserForge either produces it or refuses it.
+# The exact constraint is not guaranteed: partial_csp drops a filter it cannot
+# satisfy rather than raising (strict=False), and the returned fingerprint is
+# then clamped per axis to the requested bounds, which can mix the width of one
+# real panel with the height of another. 1600x900 was removed for that -- 9 of
+# 40 macOS draws came back as another size, two of them 1512x900, a 14"
+# MacBook Pro width with a height no Mac reports, and three as 1366x768, which
+# SCREENS_NOT_ON excludes from macOS precisely because a Mac never reports it.
+# Measure before adding an entry; a preset that misses is worse than no preset.
 SCREENS = [
     (1920, 1080), (1680, 1050), (1536, 864), (1440, 900), (2560, 1440),
-    (1920, 1200), (1600, 900), (1366, 768), (1280, 800), (2560, 1600),
+    (1920, 1200), (1366, 768), (1280, 800), (2560, 1600),
     (1512, 982), (1728, 1117),
 ]
 
@@ -70,6 +80,29 @@ SCREENS_NOT_ON = {
     "macos": {(1366, 768), (1536, 864)},
     "windows": {(1512, 982), (1728, 1117)},
 }
+
+# GPU models no machine of that OS ever shipped, matched as a substring of
+# webGl:renderer. The generator draws the renderer independently of the OS, so
+# it can hand a macOS persona a GPU that has never existed in a Mac -- the same
+# class of contradiction as SCREENS_NOT_ON, and readable by any page through
+# WEBGL_debug_renderer_info next to navigator.platform.
+#
+# Intel HD Graphics 400 is Braswell (Atom x5/x7, Celeron/Pentium N3000, 2015).
+# It shipped in Windows and Linux netbooks, so it is legitimate there; Apple
+# never used Braswell in any Mac. Measured on camoufox 0.5.6 / browserforge
+# 1.2.4, it comes up in roughly 6% of generated macOS personas.
+#
+# Substring, not equality: the generator appends ", or similar" to most
+# renderer strings and Windows wraps the model in an ANGLE(...) string.
+GPUS_NOT_ON = {
+    "macos": ("Intel(R) HD Graphics 400",),
+}
+
+# Fresh fingerprints to draw before giving up and keeping one whose GPU its OS
+# never shipped. Each launch_options() call redraws the GPU, so a handful of
+# attempts makes keeping a bad one negligible (0.06**6 for macOS) while
+# bounding the work when a future data set has no valid GPU for an OS at all.
+GPU_ATTEMPTS = 6
 
 # Desktop chrome reserved per OS, as (availLeft, availTop, reserved height).
 # Camoufox has its own work-area correction, but it still emits an availLeft
@@ -94,6 +127,193 @@ OSCPU = {
 # Windows and 32767 elsewhere. Re-chunking at the smaller size is valid on
 # every platform, so the patched config uses it unconditionally.
 CONFIG_CHUNK = 2047
+
+# -- proxies ------------------------------------------------------------------
+
+# Schemes Playwright accepts in its proxy `server` option.
+PROXY_SCHEMES = ("http", "https", "socks4", "socks5", "socks5h")
+
+# What an entry means when it names no scheme and the probe could not reach it.
+# Anonymous entries keep the documented SOCKS5 default. Entries with
+# credentials fall back to HTTP instead, because Playwright refuses to
+# authenticate to a SOCKS proxy at all (see resolve_proxy).
+DEFAULT_PROXY_SCHEME = "socks5"
+AUTHENTICATED_FALLBACK_SCHEME = "http"
+PROXY_PROBE_TIMEOUT = 15
+
+
+class InvalidProxy(ValueError):
+    """A proxies.conf line that cannot be read as a proxy."""
+
+
+def parse_proxy(entry):
+    """(scheme or None, host, port, username, password) for a proxies.conf entry.
+
+    Accepts, each optionally prefixed with `scheme://`:
+
+        DIRECT                 no proxy at all -> returns None
+        host:port              anonymous, the original format
+        host:port:user:pass    what residential providers hand out
+        user:pass@host:port    the URL spelling of the same thing
+
+    The password is taken as everything after the third colon, so one that
+    contains a colon or an '@' survives. Raises InvalidProxy on anything else,
+    naming the line: an unparsed entry used to reach Firefox as
+    `socks5://<whole line>`, which it reported as NS_ERROR_UNKNOWN_PROXY_HOST —
+    an error that reads like the proxy is down when the line simply was not
+    understood.
+    """
+    text = entry.strip()
+    if not text or text.upper() == "DIRECT":
+        return None
+    scheme = None
+    if "://" in text:
+        scheme, _, text = text.partition("://")
+        scheme = scheme.lower()
+        if scheme not in PROXY_SCHEMES:
+            raise InvalidProxy(f"{entry}: unsupported scheme '{scheme}://'")
+    username = password = None
+    # URL form only when host:port follows the last '@'; otherwise the '@' is
+    # part of a host:port:user:pass password. rpartition, so an '@' inside a
+    # URL-form password does not split the host off.
+    credentials, at, tail = text.rpartition("@")
+    if at and tail.count(":") == 1 and tail.rpartition(":")[2].isdigit():
+        text = tail
+        username, separator, password = credentials.partition(":")
+        if not separator:
+            raise InvalidProxy(f"{entry}: credentials before '@' must be user:pass")
+    fields = text.split(":", 3)
+    if len(fields) == 2:
+        host, port = fields
+    elif len(fields) == 4 and username is None:
+        host, port, username, password = fields
+    else:
+        raise InvalidProxy(
+            f"{entry}: expected host:port, host:port:user:pass or user:pass@host:port"
+        )
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise InvalidProxy(f"{entry}: '{host}:{port}' is not a host and port")
+    return scheme, host, port, username or None, password
+
+
+def proxy_label(entry):
+    """`entry` with any password removed, for logs, the dashboard and profile.json."""
+    try:
+        parsed = parse_proxy(entry)
+    except InvalidProxy:
+        return entry.split(":")[0] + ":…"
+    if parsed is None:
+        return "DIRECT"
+    scheme, host, port, username, _ = parsed
+    shown = f"{scheme}://{host}:{port}" if scheme else f"{host}:{port}"
+    return f"{shown} ({username})" if username else shown
+
+
+_SCHEME_CACHE = {}
+
+
+def _detect_scheme(host, port, username, password, log=None):
+    """Whichever scheme the endpoint speaks, or None if it answers neither.
+
+    One host:port from a residential provider commonly answers HTTP CONNECT,
+    SOCKS5, or both, and the entry says nothing about which. Guessing wrong
+    does not fail cleanly -- Firefox either reports an unrelated-looking proxy
+    error or hangs -- so probe once per endpoint and remember. requests and
+    PySocks both arrive with camoufox.
+    """
+    key = (host, port)
+    if key in _SCHEME_CACHE:
+        return _SCHEME_CACHE[key]
+    import requests
+    from urllib.parse import quote
+
+    credentials = ""
+    if username:
+        credentials = f"{quote(username, safe='')}:{quote(password or '', safe='')}@"
+    found = None
+    # socks5h, not socks5: resolve names at the exit, the way camoufox's
+    # network.proxy.socks_remote_dns pref makes Firefox do.
+    for scheme, probe_scheme in (("http", "http"), ("socks5", "socks5h")):
+        url = f"{probe_scheme}://{credentials}{host}:{port}"
+        try:
+            requests.get(
+                "https://api.ipify.org",
+                proxies={"http": url, "https": url},
+                timeout=PROXY_PROBE_TIMEOUT,
+            )
+        except Exception:
+            continue
+        found = scheme
+        break
+    _SCHEME_CACHE[key] = found
+    if found and log:
+        log(f"{host}:{port} speaks {found}")
+    return found
+
+
+def check_proxy(entry):
+    """parse_proxy, plus every rule that can be decided without the network.
+
+    Split out of resolve_proxy so a line can be rejected before any profile is
+    written. parse_proxy alone is not enough for that: it reads
+    `socks5://host:port:user:pass` quite happily, and only resolve_proxy knows
+    that scheme and those credentials cannot go together. Checking just the
+    syntax let such a line through creation and then raised on the identity
+    that drew it, mid-loop, with earlier profiles already on disk.
+
+    Deliberately does not probe. Whether an endpoint speaks SOCKS5 needs a
+    connection, and the answer can differ between runs, so resolve_proxy owns
+    that half and callers must still handle a raise from it.
+    """
+    parsed = parse_proxy(entry)
+    if parsed is None:
+        return None
+    scheme, host, port, username, password = parsed
+    if username is not None and scheme and scheme.startswith("socks"):
+        raise InvalidProxy(
+            f"{host}:{port}: Playwright cannot authenticate to a SOCKS proxy. "
+            f"Use http:// or https:// for a proxy with a username and password, "
+            f"or drop the credentials."
+        )
+    return parsed
+
+
+def resolve_proxy(entry, log=None):
+    """Playwright proxy dict for a proxies.conf entry, or None for DIRECT.
+
+    Credentials force an HTTP-family scheme. Playwright rejects them outright
+    on a SOCKS proxy -- `Browser does not support socks5 proxy authentication`,
+    thrown before the browser is even asked -- so an authenticated entry that
+    ends up on socks5 cannot launch, whatever the endpoint supports.
+    """
+    parsed = check_proxy(entry)
+    if parsed is None:
+        return None
+    scheme, host, port, username, password = parsed
+    if scheme is None:
+        fallback = AUTHENTICATED_FALLBACK_SCHEME if username else DEFAULT_PROXY_SCHEME
+        scheme = _detect_scheme(host, port, username, password, log)
+        if scheme is None:
+            scheme = fallback
+            if log:
+                log(
+                    f"warning: {host}:{port} answered neither HTTP nor SOCKS5 — "
+                    f"assuming {fallback}; check the host, port, the credentials "
+                    f"and whether this machine can reach that port"
+                )
+        elif username is not None and scheme.startswith("socks"):
+            # The endpoint answered SOCKS5 but not HTTP, and it needs a login
+            # Playwright will not send. Nothing here can make that work.
+            raise InvalidProxy(
+                f"{host}:{port}: only answers SOCKS5, and Playwright cannot "
+                f"authenticate to a SOCKS proxy. Ask the provider for an HTTP "
+                f"endpoint, or use an unauthenticated (IP-whitelisted) one."
+            )
+    proxy = {"server": f"{scheme}://{host}:{port}"}
+    if username is not None:
+        proxy["username"] = username
+        proxy["password"] = password or ""
+    return proxy
 
 
 class NoUsableScreen(RuntimeError):
@@ -163,11 +383,34 @@ def _screen_order(in_use, os_persona):
     return sorted(_fitting_screens(os_persona), key=lambda i: (tally[i], i))
 
 
+def _impossible_gpu(cfg, os_persona):
+    """The persona's webGl:renderer, when os_persona never shipped that GPU."""
+    renderer = str(cfg.get("webGl:renderer") or "")
+    for model in GPUS_NOT_ON.get(os_persona, ()):
+        if model in renderer:
+            return renderer
+    return None
+
+
+def _options_config(opts):
+    """The camoufox config dict carried by a launch_options() result."""
+    return camou_config(
+        {k: str(v) for k, v in opts["env"].items() if k.startswith("CAMOU_")}
+    )
+
+
 def _generate(order, os_persona, kwargs):
-    """launch_options with an exact screen size, trying `order` until one works."""
+    """launch_options with an exact screen size, trying `order` until one works.
+
+    Redraws up to GPU_ATTEMPTS times per size when the fingerprint names a GPU
+    os_persona never shipped (see GPUS_NOT_ON). If every draw is impossible the
+    first one is kept: a persona with an odd GPU still beats no persona at all,
+    and failing creation over it would be a worse trade.
+    """
     from browserforge.fingerprints import Screen
     from camoufox.utils import launch_options
 
+    fallback = None
     for index in order:
         width, height = SCREENS[index]
         attempt = dict(
@@ -176,10 +419,17 @@ def _generate(order, os_persona, kwargs):
                 min_width=width, max_width=width, min_height=height, max_height=height
             ),
         )
-        try:
-            return launch_options(**attempt)
-        except ValueError:
-            continue  # no fingerprint for this size; try the next one
+        for _ in range(GPU_ATTEMPTS):
+            try:
+                opts = launch_options(**attempt)
+            except ValueError:
+                break  # no fingerprint for this size; try the next one
+            if not _impossible_gpu(_options_config(opts), os_persona):
+                return opts
+            if fallback is None:
+                fallback = opts
+    if fallback is not None:
+        return fallback
     raise NoUsableScreen(f"no usable screen size for os={os_persona}")
 
 
@@ -224,6 +474,8 @@ def _patch(cfg, os_persona):
     still hands out doNotTrack "1", and it gave every identity GPC, which
     Firefox only enables in private windows. The browser sends neither header
     (see core.FIREFOX_PREFS), so the JS values must say so too.
+
+    The window position is dropped rather than repaired; see below.
     """
     _patch_locale(cfg)
     cfg["navigator.doNotTrack"] = "unspecified"
@@ -243,9 +495,17 @@ def _patch(cfg, os_persona):
     ):
         if cfg.get(key) and cfg[key] > limit:
             cfg[key] = limit
-    for key, floor in (("window.screenX", left), ("window.screenY", top)):
-        if cfg.get(key) is not None and cfg[key] < floor:
-            cfg[key] = floor
+    # Claim no window position at all. Firefox also exposes the real position
+    # through window.mozInnerScreenX/Y, which Camoufox spoofs nowhere and
+    # nothing here moves the window to match, so a spoofed screenX/screenY can
+    # only ever be contradicted by the window it describes. Worse, the value
+    # was the same for every identity -- the generator emits 0,0 when the pool
+    # record has no position, and this function used to raise that to the work
+    # area corner -- so all of them shared one contradiction, and a shared
+    # anomaly groups identities far better than a shared commonplace does.
+    # Unset, both readings come from the real window and agree by construction.
+    cfg.pop("window.screenX", None)
+    cfg.pop("window.screenY", None)
 
 
 def _chunk(cfg, env):
@@ -275,8 +535,9 @@ def generate_persona(ident, proxy, screens_in_use=()):
         # timezone while claiming another region contradicts its own exit IP.
         "geoip": True,
     }
-    if proxy != "DIRECT":
-        kwargs["proxy"] = {"server": f"socks5://{proxy}"}
+    proxy_config = resolve_proxy(proxy, lines.append)
+    if proxy_config:
+        kwargs["proxy"] = proxy_config
 
     # Camoufox warns (LeakWarning) when a kwarg can make the persona
     # detectable. Those go to stderr by default, where nobody sees them; the

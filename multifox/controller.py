@@ -13,6 +13,7 @@ driver thread; callers dispatch commands through a queue and wait on results.
 The controller must outlive the sessions: closing it closes the browsers.
 """
 
+import datetime
 import json
 import os
 import queue
@@ -24,7 +25,7 @@ import sys
 import threading
 import time
 
-from . import core, paths
+from . import core, paths, personas
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
@@ -294,7 +295,11 @@ class Controller:
         last_cookies = {}
 
         def emit(entry):
-            entry["t"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            # Local time *with* its UTC offset. A bare local timestamp cannot
+            # be lined up against the Date header of the response it describes,
+            # which is always GMT, so every correlation is silently off by the
+            # host's offset.
+            entry["t"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
             try:
                 line = json.dumps(entry) + "\n"
             except (ValueError, TypeError):
@@ -389,6 +394,28 @@ class Controller:
         ctx.on("response", on_response)
         ctx.on("requestfailed", on_requestfailed)
 
+    def _discard_context(self, ident, ctx, log):
+        """Close a context that never reached _contexts, and drop its netlog.
+
+        Only _contexts is walked by stop() and close(), so a context that was
+        launched and then failed a later step -- new_page or the first goto --
+        is invisible to both: the window stays open for the life of the
+        dashboard and no button can close it. Worse, the orphan keeps writing
+        to its profile directory, so it recreates the directory Stop just
+        deleted and the next Start reports it as an unreadable profile.
+        """
+        handle = self._netlogs.pop(ident, None)
+        self._netlog_emit.pop(ident, None)
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        try:
+            ctx.close()
+        except Exception as exc:
+            log(f"warning: {ident}: failed launch left a window open: {exc}")
+
     def _close_netlogs(self):
         for handle in self._netlogs.values():
             try:
@@ -464,9 +491,17 @@ class Controller:
                 "env": {**os.environ, **ident.env},
                 "firefox_user_prefs": core.identity_prefs(ident.env),
             }
-            if ident.proxy != "DIRECT":
-                kwargs["proxy"] = {"server": f"socks5://{ident.proxy}"}
+            ctx = None
             try:
+                # Inside the try: resolve_proxy probes the endpoint and raises
+                # InvalidProxy when it answers only SOCKS5 and needs a login.
+                # Outside, that raise left the loop and every remaining
+                # identity went unlaunched because of one bad line. The probe
+                # is also per-process, so a set that created cleanly can still
+                # raise here on a later run.
+                proxy_config = personas.resolve_proxy(ident.proxy, log)
+                if proxy_config:
+                    kwargs["proxy"] = proxy_config
                 ctx = self._pw.firefox.launch_persistent_context(**kwargs)
                 self._attach_netlog(ident.id, ctx)
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -477,10 +512,13 @@ class Controller:
                 self._contexts[ident.id] = {
                     "ctx": ctx, "page": page, "shot": None, "fails": 0, "error": None,
                 }
+                ctx = None  # handed to _contexts; stop/close own it from here
                 launched += 1
                 log(f"launched {ident.id} (controlled)")
             except Exception as exc:
                 log(f"error: {ident.id} failed to launch: {exc}")
+                if ctx is not None:
+                    self._discard_context(ident.id, ctx, log)
         if progress:
             progress(f"Launched {launched}/{total} windows", total, total)
         log(f"All {launched}/{total} identities controlled.")

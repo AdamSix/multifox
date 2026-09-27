@@ -24,7 +24,14 @@ from collections import Counter
 from dataclasses import dataclass
 
 from . import paths
-from .personas import camou_config, generate_persona, screen_ordinal
+from .personas import (
+    InvalidProxy,
+    camou_config,
+    check_proxy,
+    generate_persona,
+    proxy_label,
+    screen_ordinal,
+)
 
 MAX_SESSIONS = 100
 
@@ -118,7 +125,7 @@ def write_proxy_conf(text):
 
 
 def proxy_entries():
-    """Non-comment lines of proxies.conf: 'host:port' or 'DIRECT'."""
+    """Non-comment lines of proxies.conf. See personas.parse_proxy for the formats."""
     lines = (line.strip() for line in proxy_conf_text().splitlines())
     return [line for line in lines if line and not line.startswith("#")]
 
@@ -128,6 +135,22 @@ def effective_entries():
     if not proxies_enabled():
         return ["DIRECT"]
     return proxy_entries()
+
+
+def proxy_problems(entries=None):
+    """Complaints about every unusable proxies.conf line, empty when all parse.
+
+    check_proxy rather than parse_proxy: syntax alone would pass a line whose
+    scheme and credentials contradict each other, and the raise would then land
+    mid-creation instead of here.
+    """
+    problems = []
+    for entry in proxy_entries() if entries is None else entries:
+        try:
+            check_proxy(entry)
+        except InvalidProxy as exc:
+            problems.append(str(exc))
+    return problems
 
 
 # -- identities ---------------------------------------------------------------
@@ -253,6 +276,15 @@ def add_profiles(count, log=print, progress=None, cancel=None):
     entries = effective_entries()
     if not entries:
         raise RuntimeError(f"{paths.PROXY_CONF} has no proxy entries")
+    # Before anything is written: a line nobody can parse would otherwise reach
+    # Firefox as a hostname and come back as NS_ERROR_UNKNOWN_PROXY_HOST, which
+    # reads like a dead proxy rather than a typo.
+    problems = proxy_problems(entries)
+    if problems:
+        raise ValueError(
+            f"{paths.PROXY_CONF} has {len(problems)} unusable line(s):\n  "
+            + "\n  ".join(problems)
+        )
     if proxies_enabled():
         if total > len(entries):
             log(f"warning: {len(entries)} proxies for {total} identities — egresses repeat (shared IPs link identities)")
@@ -321,8 +353,11 @@ def status():
         "direct_entries": sum(1 for e in raw if e == "DIRECT"),
         "proxies_enabled": proxies_enabled(),
         "unloadable": unloadable,
+        # proxy_label, not the raw entry: an authenticated line carries the
+        # password, and /api/state is read by the dashboard page.
         "identities": [
-            {"id": ident.id, "proxy": ident.proxy, **ident.summary()} for ident in identities
+            {"id": ident.id, "proxy": proxy_label(ident.proxy), **ident.summary()}
+            for ident in identities
         ],
     }
 

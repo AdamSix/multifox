@@ -24,9 +24,9 @@ QA, multi-account test setups, or simply keeping several logins open without
 them sharing cookies or a fingerprint. Use it only on sites and accounts you
 are allowed to test.
 
-By default every identity connects directly, with no proxy. Per-identity
-SOCKS5 exit IPs (with GeoIP-matched timezone/locale) are an **experimental,
-untested** feature — leave proxies off for now. See
+By default every identity connects directly, with no proxy. Per-identity exit
+IPs (with GeoIP-matched timezone/locale) are **experimental**: HTTP or SOCKS5,
+with or without credentials. See
 [Proxies (experimental)](#proxies-experimental) below.
 
 ## Download
@@ -116,23 +116,44 @@ git tag v0.4.0 && git push origin v0.4.0
 
 ## Proxies (experimental)
 
-> **Experimental and untested.** Leave proxies off for now — run every
-> identity direct (the default). Note that direct identities all share your
-> real IP, and timezone/locale GeoIP matching is skipped.
+> **Experimental.** This path is newer and less exercised than the direct
+> default, so expect rough edges. Note that direct identities all share your
+> real IP, and timezone/locale GeoIP matching is skipped for them.
 
-When enabled, each identity gets its own SOCKS5 exit IP, and creation sends a
-GeoIP lookup through each proxy so the identity's timezone, locale, and
-geolocation match its exit IP.
+When enabled, each identity gets its own exit IP — an HTTP or SOCKS5 proxy,
+with or without credentials — and creation sends a GeoIP lookup through each
+proxy so the identity's timezone, locale, and geolocation match its exit IP.
 
 - Dashboard: flip the proxies toggle on and edit `proxies.conf` in the data
   dir (`~/Library/Application Support/multifox` on macOS, `%APPDATA%\multifox`
   on Windows). From a source checkout: edit `proxies.conf` in the project
   directory.
-- One SOCKS5 `host:port` per line. A new identity takes the least-used line,
-  so the lines are handed out evenly. Each line
-  must be a **different egress** — two identities sharing an exit IP are
-  linked. `DIRECT` means no proxy for that identity.
+- One proxy per line, in any of these forms:
+
+  | line | meaning |
+  | --- | --- |
+  | `host:port` | anonymous proxy |
+  | `host:port:user:pass` | authenticated — what most residential providers hand out |
+  | `user:pass@host:port` | the same thing, URL style |
+  | `DIRECT` | no proxy for that identity (your real IP) |
+
+  Any line may be prefixed with a scheme — `http://`, `https://`, `socks5://`,
+  `socks4://`. Without one, multifox probes the endpoint on first use and picks
+  whichever of HTTP and SOCKS5 it answers, then says which in the log. A
+  password may contain `:` or `@`.
+- **A line with credentials always goes over HTTP, never SOCKS.** Playwright
+  refuses to authenticate to a SOCKS proxy — it throws
+  `Browser does not support socks5 proxy authentication` before the browser is
+  even asked. A provider offering only authenticated SOCKS5 cannot be used;
+  ask for an HTTP endpoint or an IP-whitelisted one.
+- A new identity takes the least-used line, so the lines are handed out
+  evenly. Each line must be a **different egress** — two identities sharing an
+  exit IP are linked.
 - SSH tunnels to your VPSes work well: `ssh -N -D 127.0.0.1:1081 user@vps1`.
+- A line multifox cannot parse stops Start before any profile is written, and
+  names the line. Left unchecked it would reach Firefox as a hostname and come
+  back as `NS_ERROR_UNKNOWN_PROXY_HOST`, which looks like a dead proxy rather
+  than a bad line.
 - **The proxies must be UP when you create identities**, or the GeoIP lookups
   fail.
 
@@ -145,6 +166,10 @@ block page can be traced back to the request that produced it:
 ```sh
 jq -c 'select(.status != null and .status >= 400)' netlogs/k7m2.jsonl
 ```
+
+Each line carries `t`, the local time the entry was written, with its UTC
+offset (`2026-09-18T08:55:42+01:00`). The offset matters when lining entries up
+against a response's own `Date` header, which is always GMT.
 
 Queue-it waiting-room API responses are logged with their JSON `body`, so the
 queue position and estimated wait of every identity can be followed over time:
