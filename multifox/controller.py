@@ -10,6 +10,10 @@ Playwright's sync API has thread affinity: every object must be used from the
 thread that called sync_playwright(). So the controller owns a dedicated
 driver thread; callers dispatch commands through a queue and wait on results.
 
+One controller drives one browser: Camoufox through Playwright, or Chrome
+through Patchright. Two sync_playwright() instances cannot share a thread, so
+the App keeps one controller, and one driver thread, per browser.
+
 The controller must outlive the sessions: closing it closes the browsers.
 """
 
@@ -25,7 +29,7 @@ import sys
 import threading
 import time
 
-from . import core, paths, personas
+from . import chrome, core, paths, personas
 
 SHOT_CACHE_SECONDS = 2
 COMMAND_TIMEOUT = 30  # per-command wait; launch uses its own longer budget
@@ -34,6 +38,9 @@ PAGE_LOAD_TIMEOUT = 60000  # ms, per goto/reload
 # Stop waits at most this long for a cancelled launch to finish its window.
 LAUNCH_STEP_TIMEOUT = 120
 LONG_COMMANDS = frozenset({"launch", "reload", "stop", "close"})
+
+# Process name of each browser's main executable on Windows, for window raising.
+WINDOWS_PROCESS = {core.CAMOUFOX: "camoufox.exe", core.CHROME: "chrome.exe"}
 
 # Consecutive screenshot failures before an identity is reported as dead. A
 # crashed or closed page otherwise looks identical to an idle one in the UI.
@@ -187,8 +194,11 @@ def _pids_for_profile(profile_dir):
     return sorted(int(p) for p in out.split() if p.strip().isdigit())
 
 
-def _raise_os_window(profile_dir):
+def _raise_os_window(profile_dir, process_name):
     """Best effort: bring the OS window owning this profile to the front.
+
+    process_name is the executable to look for on Windows. Chrome helper
+    processes carry --type=, so they are skipped there.
 
     Returns a detail string; a leading "warning:" means the raise failed.
     """
@@ -211,8 +221,9 @@ def _raise_os_window(profile_dir):
         )
     if sys.platform == "win32":
         ps = (
-            "$p = Get-CimInstance Win32_Process -Filter \"Name='camoufox.exe'\" |"
-            f" Where-Object {{ $_.CommandLine -match [regex]::Escape('{profile_dir}') + '[\" ]' }} |"
+            f"$p = Get-CimInstance Win32_Process -Filter \"Name='{process_name}'\" |"
+            f" Where-Object {{ $_.CommandLine -match [regex]::Escape('{profile_dir}') + '[\" ]'"
+            " -and $_.CommandLine -notmatch '--type=' } |"
             " Sort-Object ProcessId | Select-Object -First 1;"
             " if ($p) { (New-Object -ComObject WScript.Shell).AppActivate($p.ProcessId) | Out-Null }"
         )
@@ -230,12 +241,13 @@ def _raise_os_window(profile_dir):
 
 
 class Controller:
-    def __init__(self):
+    def __init__(self, browser=core.CAMOUFOX):
+        self.browser = browser
         self._commands = queue.Queue()
         self._running = None  # name of the command the driver thread is executing
         self._ready = threading.Event()
         self._start_error = None
-        self._thread = threading.Thread(target=self._run, name="pw-driver", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=f"pw-{browser}", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=30):
             raise RuntimeError(f"playwright driver failed to start: {self._start_error}")
@@ -246,7 +258,10 @@ class Controller:
 
     def _run(self):
         try:
-            from playwright.sync_api import sync_playwright
+            if self.browser == core.CHROME:
+                from patchright.sync_api import sync_playwright
+            else:
+                from playwright.sync_api import sync_playwright
 
             self._pw = sync_playwright().start()
         except Exception as exc:
@@ -455,11 +470,15 @@ class Controller:
                 f"warning: ignoring {len(unloadable)} unreadable profile(s) "
                 f"({', '.join(unloadable)}) — delete them, or press Stop to clear all"
             )
+        identities = [ident for ident in identities if ident.browser == self.browser]
         if only is not None:
             identities = [ident for ident in identities if ident.id in set(only)]
         if not identities:
-            raise RuntimeError("no profiles found — run create first")
-        ff = core.browser_path()
+            raise RuntimeError(f"no {self.browser} profiles found — run create first")
+        problem = core.browser_problem(self.browser)
+        if problem:
+            raise RuntimeError(problem)
+        ff = core.browser_path() if self.browser == core.CAMOUFOX else None
         total = len(identities)
         launched = 0
         cancelled = cancel.is_set if cancel is not None else lambda: False
@@ -480,17 +499,6 @@ class Controller:
                         break
                 else:
                     time.sleep(delay)
-            kwargs = {
-                "user_data_dir": str(ident.dir),
-                "executable_path": ff,
-                "headless": False,
-                # Without this Playwright emulates a 1280x720 viewport in every
-                # window, so innerWidth contradicts the persona's outerWidth
-                # and is identical across identities.
-                "no_viewport": True,
-                "env": {**os.environ, **ident.env},
-                "firefox_user_prefs": core.identity_prefs(ident.env),
-            }
             ctx = None
             try:
                 # Inside the try: resolve_proxy probes the endpoint and raises
@@ -500,9 +508,10 @@ class Controller:
                 # is also per-process, so a set that created cleanly can still
                 # raise here on a later run.
                 proxy_config = personas.resolve_proxy(ident.proxy, log)
+                kwargs = self._launch_options(ident, ff, proxied=bool(proxy_config))
                 if proxy_config:
                     kwargs["proxy"] = proxy_config
-                ctx = self._pw.firefox.launch_persistent_context(**kwargs)
+                ctx = self._browser_type().launch_persistent_context(**kwargs)
                 self._attach_netlog(ident.id, ctx)
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 if url and url != "about:blank":
@@ -523,6 +532,26 @@ class Controller:
             progress(f"Launched {launched}/{total} windows", total, total)
         log(f"All {launched}/{total} identities controlled.")
         return launched
+
+    def _browser_type(self):
+        return self._pw.chromium if self.browser == core.CHROME else self._pw.firefox
+
+    def _launch_options(self, ident, ff, proxied):
+        """launch_persistent_context kwargs for one identity, proxy excluded."""
+        if self.browser == core.CHROME:
+            chrome.write_prefs(ident.dir, ident.persona, proxied)
+            return chrome.launch_options(ident.dir, ident.persona)
+        return {
+            "user_data_dir": str(ident.dir),
+            "executable_path": ff,
+            "headless": False,
+            # Without this Playwright emulates a 1280x720 viewport in every
+            # window, so innerWidth contradicts the persona's outerWidth
+            # and is identical across identities.
+            "no_viewport": True,
+            "env": {**os.environ, **ident.env},
+            "firefox_user_prefs": core.identity_prefs(ident.env),
+        }
 
     def _cmd_screenshot(self, ident):
         entry = self._contexts.get(ident)
@@ -552,7 +581,7 @@ class Controller:
             entry["page"].bring_to_front()
         except Exception:
             pass  # page may be closed; the OS raise below is the important part
-        return _raise_os_window(paths.PROFILES / ident)
+        return _raise_os_window(paths.PROFILES / ident, WINDOWS_PROCESS[self.browser])
 
     def _cmd_reload(self, url, log, progress=None):
         if not self._contexts:

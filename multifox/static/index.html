@@ -145,6 +145,13 @@
   .switch input:checked + .slider { background: #1f6feb; border-color: #1f6feb; }
   .switch input:checked + .slider::before { transform: translateX(16px); background: #fff; }
 
+  /* browser picker: two joined buttons */
+  .segmented { display: inline-flex; align-items: center; gap: 6px; }
+  .segmented button { border-radius: 0; padding: 6px 10px; }
+  .segmented button:first-of-type { border-radius: 6px 0 0 6px; }
+  .segmented button:last-of-type { border-radius: 0 6px 6px 0; margin-left: -1px; }
+  .segmented button.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
   /* proxy edit modal */
   #modal-overlay {
     position: fixed; inset: 0; background: rgba(1, 4, 9, 0.7);
@@ -175,11 +182,18 @@
 </head>
 <body>
 <h1>multifox</h1>
-<p class="tagline">Run many isolated Firefox browsers side by side — each with its own fingerprint and exit IP. Stop wipes everything.</p>
+<p class="tagline">Run many isolated browsers side by side — each with its own profile and exit IP. Stop wipes everything.</p>
 
 <div class="controls">
   <label>count <input id="count" type="number" min="1" max="100" value="10"></label>
   <label>url <input id="url" type="text" value="https://www.google.com"></label>
+  <span class="segmented" title="browser for new identities — Start or Add to use it">
+    browser
+    <button id="browser-camoufox" data-browser="camoufox"
+      title="Camoufox: modified Firefox, a full spoofed fingerprint per identity">Camoufox</button>
+    <button id="browser-chrome" data-browser="chrome"
+      title="Google Chrome: the real browser; only timezone, language and window size change">Chrome</button>
+  </span>
   <label class="switch" title="off = every identity uses your real IP">
     <input id="proxytoggle" type="checkbox">
     <span class="slider"></span>
@@ -187,6 +201,7 @@
   </label>
   <button id="proxyedit" style="display:none">edit</button>
   <span id="proxies"></span>
+  <span id="browserwarn" style="color:#f85149"></span>
   <span id="stale"></span>
   <span class="actions">
     <button id="add" style="display:none" title="create one more identity and launch it">Add 1</button>
@@ -263,6 +278,9 @@ $("add").onclick = () => api("/api/add", {url: $("url").value});
 $("stop").onclick = () => api("/api/stop");
 $("proxytoggle").onchange = () => api("/api/proxies", {enabled: $("proxytoggle").checked});
 $("openlog").onclick = () => api("/api/open-log");
+document.querySelectorAll("[data-browser]").forEach(b => {
+  b.onclick = () => api("/api/browser", {browser: b.dataset.browser});
+});
 
 // click a live tile to bring its browser window to the front; the ✕ removes it
 document.addEventListener("click", async (e) => {
@@ -314,6 +332,15 @@ function render(state) {
     ? `${state.proxy_entries} proxies configured (${state.direct_entries} DIRECT)`
     : "proxies off — everything uses your real IP";
   $("proxies").style.color = state.proxies_enabled ? "" : "#d29922";
+
+  const problems = state.browser_problems || {};
+  document.querySelectorAll("[data-browser]").forEach(b => {
+    const problem = problems[b.dataset.browser];
+    b.classList.toggle("on", state.browser === b.dataset.browser);
+    b.disabled = !!problem && state.browser !== b.dataset.browser;
+    if (problem) b.title = problem;
+  });
+  $("browserwarn").textContent = problems[state.browser] || "";
 
   const f = state.freshness || {};
   const stale = [];
@@ -384,7 +411,7 @@ function render(state) {
 
   // rebuild the grid only when the identity set or run-states change
   const sig = JSON.stringify(state.identities.map(i =>
-    [i.id, i.controlled, i.dead, i.error, i.proxy, i.os, i.tz, i.ua_tail]));
+    [i.id, i.browser, i.controlled, i.dead, i.error, i.proxy, i.os, i.tz, i.ua_tail]));
   if (sig !== lastSig) {
     lastSig = sig;
     $("grid").innerHTML = state.identities.map(i => {
@@ -405,7 +432,7 @@ function render(state) {
               title="close this window and delete its profile">✕</button></span></header>
         ${view}
         ${note}
-        <footer>${esc(i.proxy)} · ${esc(i.os)} · ${esc(i.tz)}<br>…${esc(i.ua_tail)}</footer>
+        <footer>${esc(i.browser)} · ${esc(i.proxy)} · ${esc(i.os)} · ${esc(i.tz)}<br>…${esc(i.ua_tail)}</footer>
       </div>`;
     }).join("");
     $("empty").style.display = state.identities.length ? "none" : "block";

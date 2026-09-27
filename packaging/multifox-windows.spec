@@ -28,6 +28,7 @@ if os.path.isfile(payload):
 # packages with data files / native drivers that static analysis misses
 for pkg in (
     "playwright",                  # node driver bundle
+    "patchright",                  # its own driver bundle, for the Chrome option
     "camoufox",
     "browserforge",
     "apify_fingerprint_datapoints",  # fingerprint data

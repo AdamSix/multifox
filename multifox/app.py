@@ -1,7 +1,7 @@
 """
 Application state shared by the dashboard HTTP handlers and the desktop
-launcher: the Playwright controller (created on first use), the background
-job runner, and the Camoufox freshness check.
+launcher: the Playwright controllers (one per browser, each created on first
+use), the background job runner, and the Camoufox freshness check.
 
 One App per process. The HTTP server holds it; handlers reach it via
 self.server.app.
@@ -16,7 +16,7 @@ from . import controller, core, paths
 
 class App:
     def __init__(self):
-        self._controller = None
+        self._controllers = {}  # browser -> Controller
         self._controller_lock = threading.Lock()
         self._jobs = []
         self._jobs_lock = threading.Lock()
@@ -29,35 +29,52 @@ class App:
 
     # -- controller -----------------------------------------------------------
 
-    def controller(self):
+    def controller(self, browser):
         with self._controller_lock:
-            if self._controller is None:
-                self._controller = controller.Controller()
-            return self._controller
+            if browser not in self._controllers:
+                self._controllers[browser] = controller.Controller(browser)
+            return self._controllers[browser]
+
+    def _started_controllers(self):
+        with self._controller_lock:
+            return list(self._controllers.values())
+
+    def _controller_for(self, ident):
+        """The controller whose browser ident runs in, or None if it is not running."""
+        for ctl in self._started_controllers():
+            if ident in ctl.controlled_idents():
+                return ctl
+        return None
 
     def controlled_idents(self):
-        """Identities under Playwright control, without starting the driver."""
-        if self._controller is None:
-            return []
-        try:
-            return self._controller.controlled_idents()
-        except Exception:
-            return []
+        """Identities under Playwright control, without starting a driver."""
+        idents = []
+        for ctl in self._started_controllers():
+            try:
+                idents.extend(ctl.controlled_idents())
+            except Exception:
+                pass
+        return idents
 
     def health(self):
-        """Per-identity liveness, without starting the driver."""
-        if self._controller is None:
-            return {}
-        try:
-            return self._controller.health()
-        except Exception:
-            return {}
+        """Per-identity liveness, without starting a driver."""
+        health = {}
+        for ctl in self._started_controllers():
+            try:
+                health.update(ctl.health())
+            except Exception:
+                pass
+        return health
+
+    def screenshot(self, ident):
+        ctl = self._controller_for(ident)
+        return ctl.screenshot(ident) if ctl is not None else None
 
     def shutdown(self):
         self.cancel.set()  # a launch in progress winds down instead of holding the quit
-        if self._controller is not None:
+        for ctl in self._started_controllers():
             try:
-                self._controller.stop(lambda line: None)
+                ctl.stop(lambda line: None)
             except Exception:
                 pass
 
@@ -161,18 +178,43 @@ class App:
 
     # -- operations -----------------------------------------------------------
 
+    def _launch(self, url, log, progress=None, only=None):
+        """Launch identities on disk, each through its own browser's controller.
+
+        Launches one browser's identities after the other's, so a mixed set
+        shows two progress runs.
+        """
+        identities = core.load_identities()
+        if only is not None:
+            identities = [ident for ident in identities if ident.id in set(only)]
+        if not identities:
+            raise RuntimeError("no profiles found — run create first")
+        by_browser = {}
+        for ident in identities:
+            by_browser.setdefault(ident.browser, []).append(ident.id)
+        for browser, idents in by_browser.items():
+            if self.cancel.is_set():
+                break
+            self.controller(browser).launch(
+                url, log, progress=progress, only=idents, cancel=self.cancel
+            )
+
     def start_sessions(self, count, url, log, progress=None):
         core.create_profiles(count, log, progress=progress, cancel=self.cancel)
         if self.cancel.is_set():
             log("cancelled by Stop")
             return
-        self.controller().launch(url, log, progress=progress, cancel=self.cancel)
+        self._launch(url, log, progress)
 
     def reload_sessions(self, url, log, progress=None):
-        self.controller().reload(url, log, progress=progress)
+        running = [ctl for ctl in self._started_controllers() if ctl.controlled_idents()]
+        if not running:
+            raise RuntimeError("no controlled sessions to reload")
+        for ctl in running:
+            ctl.reload(url, log, progress=progress)
 
     def launch_sessions(self, url, log, progress=None):
-        self.controller().launch(url, log, progress=progress, cancel=self.cancel)
+        self._launch(url, log, progress)
 
     def add_sessions(self, count, url, log, progress=None):
         """Create `count` more identities and launch only those."""
@@ -180,18 +222,16 @@ class App:
         if self.cancel.is_set():
             log("cancelled by Stop")
             return
-        self.controller().launch(
-            url, log, progress=progress, only=[ident.id for ident in created],
-            cancel=self.cancel,
-        )
+        self._launch(url, log, progress, only=[ident.id for ident in created])
 
     def remove_session(self, ident, log, progress=None):
         """Close one identity's window, if it has one, and delete its profile."""
         if progress:
             progress(f"Closing {ident}…")
-        if self._controller is not None:
+        ctl = self._controller_for(ident)
+        if ctl is not None:
             try:
-                self._controller.close(ident, log)
+                ctl.close(ident, log)
             except RuntimeError as exc:
                 log(f"controller: {exc}")
         if progress:
@@ -206,9 +246,9 @@ class App:
         self.wait_for_other_jobs(timeout=controller.LAUNCH_STEP_TIMEOUT)
         if progress:
             progress("Closing browser windows…")
-        if self._controller is not None:
+        for ctl in self._started_controllers():
             try:
-                self._controller.stop(log)
+                ctl.stop(log)
             except RuntimeError as exc:
                 log(f"controller: {exc}")
         if progress:
@@ -217,7 +257,10 @@ class App:
 
     def focus(self, ident):
         """Bring an identity's window to the front; returns a detail string."""
-        detail = self.controller().focus(ident)
+        ctl = self._controller_for(ident)
+        if ctl is None:
+            raise RuntimeError(f"{ident} is not controlled — no window to focus")
+        detail = ctl.focus(ident)
         if sys.platform == "darwin" and not controller.accessibility_trusted():
             self.request_accessibility_once()
             detail = (

@@ -345,7 +345,7 @@ def screen_ordinal(env):
     return SCREENS.index(size) if size in SCREENS else None
 
 
-def _host_display():
+def host_display():
     """(width, height) of the largest attached display in CSS pixels, or None."""
     try:
         from camoufox.display import largest_display
@@ -363,7 +363,7 @@ def _fitting_screens(os_persona):
     """
     excluded = SCREENS_NOT_ON.get(os_persona, set())
     for_os = [i for i, size in enumerate(SCREENS) if size not in excluded]
-    display = _host_display()
+    display = host_display()
     if display is None:
         return for_os
     width, height = display
@@ -433,6 +433,20 @@ def _generate(order, os_persona, kwargs):
     raise NoUsableScreen(f"no usable screen size for os={os_persona}")
 
 
+def region_locale(region):
+    """The camoufox Locale of `region`'s most-spoken language, or None if unknown."""
+    from camoufox.locales import SELECTOR, normalize_locale
+
+    try:
+        # Private, but the public entry point picks at random by design.
+        languages, weights = SELECTOR._load_territory_data(region)
+        return normalize_locale(
+            f"{str(languages[int(weights.argmax())]).replace('_', '-')}-{region}"
+        )
+    except Exception:  # unknown territory, no language data, camoufox change
+        return None
+
+
 def _patch_locale(cfg):
     """Replace the persona language with the region's most-spoken one, in place.
 
@@ -445,18 +459,11 @@ def _patch_locale(cfg):
     Region, script, timezone and geolocation still come from GeoIP, so an
     identity behind a proxy stays consistent with its exit IP.
     """
-    from camoufox.locales import SELECTOR, normalize_locale
-
     region = cfg.get("locale:region")
     if not region:
         return
-    try:
-        # Private, but the public entry point picks at random by design.
-        languages, weights = SELECTOR._load_territory_data(region)
-        locale = normalize_locale(
-            f"{str(languages[int(weights.argmax())]).replace('_', '-')}-{region}"
-        )
-    except Exception:  # unknown territory, no language data, camoufox change
+    locale = region_locale(region)
+    if locale is None:
         return
     cfg.update(locale.as_config())
     cfg["locale:all"] = f"{locale.as_string}, {locale.language}"

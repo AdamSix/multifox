@@ -1,10 +1,12 @@
 """
-Cross-platform core for managing isolated Camoufox identity profiles:
-create/delete/status, driven by the dashboard. Browser discovery goes through
+Cross-platform core for managing isolated identity profiles:
+create/delete/status, driven by the dashboard. Camoufox discovery goes through
 the camoufox package, so it works on macOS, Windows and Linux.
 
-Each identity is a directory profiles/<id> holding the Firefox profile plus a
-profile.json with the proxy it was created for and its Camoufox persona env.
+Each identity is a directory profiles/<id> holding the browser profile plus a
+profile.json with the proxy it was created for, the browser it runs in, and
+its persona: the CAMOU_* env for Camoufox, a small dict for Chrome (see
+chrome.py).
 The directory name is the identity id: a short random slug, generated once and
 never reused, so netlogs/<id>.jsonl can only ever hold one persona.
 
@@ -21,9 +23,9 @@ import sys
 import time
 import urllib.request
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from . import paths
+from . import chrome, paths
 from .personas import (
     InvalidProxy,
     camou_config,
@@ -34,6 +36,10 @@ from .personas import (
 )
 
 MAX_SESSIONS = 100
+
+CAMOUFOX = "camoufox"
+CHROME = "chrome"
+BROWSERS = (CAMOUFOX, CHROME)
 
 # Identity ids: digits and consonants only, so no slug reads as a word and
 # none of 0/O/1/l can be misread off the screen.
@@ -101,16 +107,44 @@ def identity_prefs(env):
 # -- proxy settings -----------------------------------------------------------
 
 
+def _settings():
+    try:
+        settings = json.loads(paths.SETTINGS.read_text())
+    except (OSError, ValueError):
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def _save_setting(key, value):
+    settings = _settings()
+    settings[key] = value
+    paths.SETTINGS.write_text(json.dumps(settings) + "\n")
+
+
 def proxies_enabled():
     """Global proxy toggle (dashboard UI). Off = every identity goes DIRECT."""
-    try:
-        return bool(json.loads(paths.SETTINGS.read_text()).get("proxies", False))
-    except (OSError, ValueError):
-        return False
+    return bool(_settings().get("proxies", False))
 
 
 def set_proxies_enabled(enabled):
-    paths.SETTINGS.write_text(json.dumps({"proxies": bool(enabled)}) + "\n")
+    _save_setting("proxies", bool(enabled))
+
+
+def browser_setting():
+    """Browser that new identities are created for (dashboard UI switch)."""
+    browser = _settings().get("browser")
+    return browser if browser in BROWSERS else CAMOUFOX
+
+
+def set_browser(browser):
+    if browser not in BROWSERS:
+        raise ValueError(f"browser must be one of {', '.join(BROWSERS)}")
+    _save_setting("browser", browser)
+
+
+def browser_problem(browser):
+    """Why identities for `browser` cannot run on this machine, or None."""
+    return chrome.problem() if browser == CHROME else None
 
 
 def proxy_conf_text():
@@ -174,8 +208,10 @@ def _least_used_index(count, taken):
 class Identity:
     id: str  # also the profile directory name
     proxy: str  # proxies.conf entry this identity was created for
-    env: dict  # CAMOU_* persona env for the browser process
+    env: dict  # CAMOU_* persona env for the browser process; empty for Chrome
     created: float  # epoch seconds; the dashboard orders tiles by it
+    browser: str = CAMOUFOX
+    persona: dict = field(default_factory=dict)  # Chrome persona; empty for Camoufox
 
     @property
     def dir(self):
@@ -187,8 +223,12 @@ class Identity:
             "id": self.id,
             "proxy": self.proxy,
             "created": self.created,
-            "env": self.env,
+            "browser": self.browser,
         }
+        if self.browser == CHROME:
+            data["persona"] = self.persona
+        else:
+            data["env"] = self.env
         (self.dir / PROFILE_FILE).write_text(json.dumps(data, indent=2) + "\n")
 
     @classmethod
@@ -197,17 +237,27 @@ class Identity:
 
         created is missing from profiles written before ids became slugs; the
         mtime of profile.json stands in, since it is written once at creation.
+        browser is missing from profiles written before Chrome existed; those
+        are all Camoufox.
         """
         profile_file = profile_dir / PROFILE_FILE
         data = json.loads(profile_file.read_text())
+        browser = data.get("browser", CAMOUFOX)
+        if browser not in BROWSERS:
+            raise ValueError(f"{profile_dir.name}: unknown browser '{browser}'")
+        chrome_identity = browser == CHROME
         return cls(
             id=profile_dir.name,
             proxy=data["proxy"],
-            env=dict(data["env"]),
+            env={} if chrome_identity else dict(data["env"]),
             created=float(data.get("created") or profile_file.stat().st_mtime),
+            browser=browser,
+            persona=dict(data["persona"]) if chrome_identity else {},
         )
 
     def summary(self):
+        if self.browser == CHROME:
+            return chrome.summary(self.persona)
         try:
             cfg = camou_config(self.env)
         except ValueError:
@@ -258,6 +308,9 @@ def create_profiles(count, log=print, progress=None, cancel=None):
     """Replace every profile on disk with a fresh set of `count` identities."""
     if not 1 <= count <= MAX_SESSIONS:
         raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {count})")
+    problem = browser_problem(browser_setting())
+    if problem:
+        raise RuntimeError(problem)  # before the wipe, not after it
     delete_profiles()  # a smaller count must not leave stale profiles behind
     return add_profiles(count, log, progress=progress, cancel=cancel)
 
@@ -273,6 +326,10 @@ def add_profiles(count, log=print, progress=None, cancel=None):
     total = len(existing) + count
     if count < 1 or total > MAX_SESSIONS:
         raise ValueError(f"identity count must be 1-{MAX_SESSIONS} (got {total})")
+    browser = browser_setting()
+    problem = browser_problem(browser)
+    if problem:
+        raise RuntimeError(problem)
     entries = effective_entries()
     if not entries:
         raise RuntimeError(f"{paths.PROXY_CONF} has no proxy entries")
@@ -302,12 +359,19 @@ def add_profiles(count, log=print, progress=None, cancel=None):
         ident = new_ident()
         if proxy == "DIRECT" and proxies_enabled():
             log(f"warning: {ident} will connect DIRECTLY (your real IP)")
-        env, lines = generate_persona(
-            ident, proxy, [screen_ordinal(i.env) for i in identities]
-        )
+        env, persona = {}, {}
+        if browser == CHROME:
+            persona, lines = chrome.generate_persona(ident, proxy)
+        else:
+            env, lines = generate_persona(
+                ident, proxy, [screen_ordinal(i.env) for i in identities]
+            )
         for line in lines:
             log(line)
-        identity = Identity(id=ident, proxy=proxy, env=env, created=time.time())
+        identity = Identity(
+            id=ident, proxy=proxy, env=env, created=time.time(),
+            browser=browser, persona=persona,
+        )
         identity.save()
         identities.append(identity)
         created.append(identity)
@@ -352,11 +416,18 @@ def status():
         "proxy_entries": len(raw),
         "direct_entries": sum(1 for e in raw if e == "DIRECT"),
         "proxies_enabled": proxies_enabled(),
+        "browser": browser_setting(),
+        "browser_problems": {b: browser_problem(b) for b in BROWSERS},
         "unloadable": unloadable,
         # proxy_label, not the raw entry: an authenticated line carries the
         # password, and /api/state is read by the dashboard page.
         "identities": [
-            {"id": ident.id, "proxy": proxy_label(ident.proxy), **ident.summary()}
+            {
+                "id": ident.id,
+                "proxy": proxy_label(ident.proxy),
+                "browser": ident.browser,
+                **ident.summary(),
+            }
             for ident in identities
         ],
     }
@@ -460,8 +531,9 @@ def _update_browser_frozen(log):
 def update_camoufox(log=print):
     """Bring camoufox up to date.
 
-    Source checkout: upgrade the pip package, then fetch the latest browser via
-    the camoufox CLI. Frozen (PyInstaller) app: the package is baked into the
+    Source checkout: upgrade the pip packages, then fetch the latest browser via
+    the camoufox CLI. patchright is upgraded alongside: it must track the
+    installed Chrome, which updates itself. Frozen (PyInstaller) app: the package is baked into the
     bundle and pip isn't shipped, and re-executing sys.executable would just
     relaunch the app — so only the browser is updated, in-process via
     CamoufoxFetcher (which only offers releases the bundled package supports).
@@ -472,7 +544,7 @@ def update_camoufox(log=print):
         _update_browser_frozen(log)
         return
     for cmd in (
-        [sys.executable, "-m", "pip", "install", "--upgrade", "camoufox[geoip]"],
+        [sys.executable, "-m", "pip", "install", "--upgrade", "camoufox[geoip]", "patchright"],
         [sys.executable, "-m", "camoufox", "set", "official/stable"],
         [sys.executable, "-m", "camoufox", "fetch"],
     ):

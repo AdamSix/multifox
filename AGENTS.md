@@ -29,6 +29,11 @@ Use case: testing how a site behaves for many distinct visitors at once —
 anti-bot / fingerprint checks, geo and A/B QA, several logins that must not
 share cookies or a fingerprint.
 
+A dashboard switch picks the browser for new identities: Camoufox (the
+above) or the installed Google Chrome, driven through Patchright with no
+fingerprint spoofing beyond timezone, language, geolocation and window size
+(see `chrome.py`). Each identity records its browser, so a set can be mixed.
+
 Per-identity proxy exit IPs (HTTP or SOCKS5, with or without credentials) are
 implemented but **experimental**.
 The default is direct (no proxy) for every identity.
@@ -36,15 +41,16 @@ The default is direct (no proxy) for every identity.
 ## Architecture
 
 ```
-install.py            venv + camoufox package + browser download (source checkout only)
+install.py            venv + camoufox and patchright packages + Camoufox download (source checkout only)
 dashboard.py          shim -> multifox.dashboard:main   (headless server, dev use)
 launcher.py           shim -> multifox.launcher:main    (desktop app entry point)
 multifox/
   paths.py            all filesystem locations; HOME (writable data) vs BUNDLE (read-only assets)
-  personas.py         generate_persona(ident, proxy, ordinal) -> CAMOU_* env for one identity
-  core.py             identities on disk (create / add / delete one or all), proxy config, per-identity prefs, camoufox version checks + update
-  controller.py       Playwright driver thread; launch / screenshot / focus / reload / close one / stop, per-identity network log
-  app.py              App: shared state — controller, background jobs, freshness
+  personas.py         generate_persona(ident, proxy, ordinal) -> CAMOU_* env for one identity; proxy parsing
+  chrome.py           Chrome backend: persona (tz / language / geolocation / window), Preferences, launch kwargs
+  core.py             identities on disk (create / add / delete one or all), proxy config, browser switch, per-identity prefs, camoufox version checks + update
+  controller.py       one Playwright driver thread per browser; launch / screenshot / focus / reload / close one / stop, per-identity network log
+  app.py              App: shared state — one controller per browser, background jobs, freshness
   dashboard.py        stdlib http.server on 127.0.0.1:8787 + JSON API
   launcher.py         packaged app: browser install/update, then dashboard in a pywebview window
   static/index.html   the whole UI (one file: markup, CSS, vanilla JS polling /api/state)
@@ -52,7 +58,7 @@ packaging/            PyInstaller specs, build_app.sh / build_app.ps1, entitleme
 .github/workflows/    build.yml — tag v* builds all three platforms, signs + notarizes macOS, cuts a Release
 ```
 
-Layer rule: `paths` <- `personas` <- `core` <- `controller` <- `app` <-
+Layer rule: `paths` <- `personas` <- `chrome` <- `core` <- `controller` <- `app` <-
 (`dashboard`, `launcher`). Keep it acyclic. The shims at the repo root exist so
 `python3 launcher.py` and the PyInstaller specs keep working; put no logic in
 them.
@@ -64,6 +70,27 @@ them.
   driver thread; callers push commands onto a queue and wait for a result. Any
   new browser operation must be a `_cmd_*` method plus a public wrapper that
   calls `_dispatch`. Never touch a context or page from an HTTP handler.
+  Camoufox runs on `playwright` and Chrome on `patchright`, and two
+  `sync_playwright()` instances cannot share one thread, so there is one
+  `Controller` per browser (`App.controller(browser)`). The App routes a
+  screenshot, focus or close to the controller that holds the identity.
+- **The Chrome backend spoofs only what real Chrome users vary.** Timezone,
+  language and geolocation follow the proxy exit IP, the window size is
+  random, and nothing else changes. Do not add a UA, client-hint or platform
+  override, or JS spoofing: the binary is the real Chrome, so its TLS
+  fingerprint and engine behaviour are Chrome's, and any override would
+  contradict them. A DIRECT Chrome identity changes nothing but its window,
+  since the host timezone and language already match the host IP. The
+  language needs three settings, because Chrome reads it from three places:
+  the `intl.accept_languages` pref (navigator.languages, Accept-Language),
+  `--lang` (Intl locale on Windows) and `LANG` (Intl locale on Linux). On
+  macOS the Intl locale follows the system language and nothing here sets
+  it. Playwright's `locale` option is not used: it sends a one-value
+  Accept-Language that real Chrome never sends. Prefs are merged into
+  `Default/Preferences` before every launch, since Chrome rewrites that file.
+  Patchright drops Playwright's default flags, so `chrome.launch_options`
+  adds `--disable-backgrounding-occluded-windows` itself; without it a
+  window behind other windows stops painting and its screenshot hangs.
 - **`/api/state` must never wait on the driver thread.** A launch holds that
   thread for minutes, and a poll queued behind it froze the progress bar at
   `1/N` until the whole job finished. `controlled_idents()` and `health()`
@@ -272,11 +299,15 @@ them.
 Under `paths.HOME` (`~/Library/Application Support/multifox` on macOS,
 `%APPDATA%\multifox` on Windows, the project dir from a source checkout):
 
-- `profiles/<id>/` — the Firefox profile directory. `<id>` is the identity id:
+- `profiles/<id>/` — the Firefox or Chrome profile directory. `<id>` is the identity id:
   4 characters from `IDENT_ALPHABET` (digits and consonants, so no slug reads
   as a word), drawn at random and never reused.
-- `profiles/<id>/profile.json` — `{id, proxy, created, env}`. `env` is the
-  CAMOU_* persona. This is the identity format; a change here invalidates
+- `profiles/<id>/profile.json` — `{id, proxy, created, browser, env}` for
+  Camoufox, `{id, proxy, created, browser, persona}` for Chrome. `env` is the
+  CAMOU_* persona; `persona` holds `window` and, for a proxied identity,
+  `timezone`, `locale`, `languages` and `geolocation`. A missing `browser`
+  means Camoufox, which every profile was before Chrome existed. This is the
+  identity format; a change here invalidates
   existing profiles, and `Identity.load` silently skips anything it cannot
   parse. The id on disk is the directory name, not the `id` field, so a
   profile written before ids became slugs still loads. `created` orders the
@@ -290,7 +321,8 @@ Under `paths.HOME` (`~/Library/Application Support/multifox` on macOS,
   password included, is what `profile.json` stores and what
   `_least_used_index` compares; `personas.proxy_label` is the form that reaches
   logs and `/api/state`, since the dashboard page reads the latter.
-- `settings.json` — `{"proxies": bool}` only.
+- `settings.json` — `{"proxies": bool, "browser": "camoufox" | "chrome"}`.
+  `browser` applies to identities created afterwards.
 - `dashboard.log`, `launcher.log` — full job logs; the UI shows progress plus
   lines matching warning/error/fail.
 
@@ -353,7 +385,7 @@ netlog of the old holder would then gain a second persona.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/` | `static/index.html`, sent `no-store`: WebKit's disk cache outlives the app and served a previous release's page |
-| GET | `/api/state` | identities, proxy counts, camoufox freshness, last 5 jobs |
+| GET | `/api/state` | identities (with their browser), proxy counts, browser switch and why a browser is unavailable, camoufox freshness, last 5 jobs |
 | GET | `/api/shot/<id>` | JPEG screenshot, cached 2s per identity |
 | GET/POST | `/api/proxies/conf` | read / write `proxies.conf` text |
 | POST | `/api/start` | create N profiles then launch; reloads instead if sessions run |
@@ -364,6 +396,7 @@ netlog of the old holder would then gain a second persona.
 | POST | `/api/stop` | close every context and delete all profiles |
 | POST | `/api/focus` | raise one identity's OS window |
 | POST | `/api/proxies` | set the global proxy toggle |
+| POST | `/api/browser` | set the browser for new identities (`camoufox` or `chrome`) |
 | POST | `/api/open-log` | open `dashboard.log` in the OS text editor |
 
 `/api/state` reports `dead: true` for an identity whose screenshots have failed

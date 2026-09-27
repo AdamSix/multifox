@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Local web dashboard for multifox — manage Camoufox identity profiles
+Local web dashboard for multifox — manage Camoufox and Chrome identity profiles
 (create / launch / stop / status) from a browser UI.
 
 Run with the project venv: .venv/bin/python dashboard.py
 Then open http://multifox.localhost:8787
 
-Binds localhost only. Launch uses the Playwright controller (controller.py):
+Binds localhost only. Launch uses the Playwright controllers (controller.py):
 headed windows under automation control, with live screenshots in the UI.
 The dashboard must stay alive for the whole session — quitting it closes
 the browser windows.
@@ -89,12 +89,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"text": core.proxy_conf_text()})
         elif self.path.startswith("/api/shot/"):
             ident = self.path[len("/api/shot/"):].split("?", 1)[0]
-            data = None
-            if ident in self.app.controlled_idents():
-                try:
-                    data = self.app.controller().screenshot(ident)
-                except RuntimeError:
-                    data = None
+            try:
+                data = self.app.screenshot(ident)
+            except RuntimeError:
+                data = None
             if data is None:
                 self._send_json({"error": "no screenshot available"}, 404)
             else:
@@ -153,6 +151,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/proxies":
             core.set_proxies_enabled(bool(body.get("enabled", True)))
             self._send_json({"proxies_enabled": core.proxies_enabled()})
+        elif self.path == "/api/browser":
+            try:
+                core.set_browser(body.get("browser"))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return
+            self._send_json({"browser": core.browser_setting()})
         elif self.path == "/api/proxies/conf":
             text = body.get("text")
             if not isinstance(text, str):

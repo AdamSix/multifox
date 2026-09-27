@@ -4,8 +4,10 @@ One-time installer for multifox — works on macOS, Linux and Windows.
 
   python3 install.py      (Windows: py install.py)
 
-Creates .venv, installs the camoufox python package (with GeoIP support),
-and downloads the Camoufox browser (~600MB). Safe to re-run: it just upgrades.
+Creates .venv, installs the camoufox python package (with GeoIP support) and
+patchright, and downloads the Camoufox browser (~600MB). Safe to re-run: it
+just upgrades. The Chrome option uses the installed Google Chrome, which this
+script does not install.
 """
 
 import subprocess
@@ -35,7 +37,7 @@ def main():
         print("creating virtualenv in .venv ...")
         run([sys.executable, "-m", "venv", str(VENV)])
     run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
-    run([str(py), "-m", "pip", "install", "--upgrade", "camoufox[geoip]", "pywebview"])
+    run([str(py), "-m", "pip", "install", "--upgrade", "camoufox[geoip]", "patchright", "pywebview"])
     run([str(py), "-m", "camoufox", "set", "official/stable"])
     run([str(py), "-m", "camoufox", "fetch"])
     # camoufox fetch exits 0 even when it synced nothing (e.g. GitHub API rate

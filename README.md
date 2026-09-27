@@ -24,6 +24,22 @@ QA, multi-account test setups, or simply keeping several logins open without
 them sharing cookies or a fingerprint. Use it only on sites and accounts you
 are allowed to test.
 
+**Two browsers.** The **browser** switch in the dashboard picks what new
+identities run in:
+
+- **Camoufox** (default): a modified Firefox. Every identity gets a full
+  spoofed fingerprint, so a site has a hard time linking identities to each
+  other. A site that looks for modified browsers may spot it.
+- **Chrome**: your installed Google Chrome, unmodified, driven through
+  [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python). The
+  browser build itself looks normal, but GPU, canvas, fonts, hardware and
+  screen are your machine's, the same for every identity. Only timezone,
+  language and geolocation (matched to the proxy exit IP) and the window size
+  change. Needs Google Chrome installed.
+
+The switch applies to identities created afterwards. **Add 1** after a switch
+gives a mixed set, which lets you compare both on one site at once.
+
 By default every identity connects directly, with no proxy. Per-identity exit
 IPs (with GeoIP-matched timezone/locale) are **experimental**: HTTP or SOCKS5,
 with or without credentials. See
