@@ -157,10 +157,11 @@ def parse_proxy(entry):
         user:pass@host:port    the URL spelling of the same thing
 
     The password is taken as everything after the third colon, so one that
-    contains a colon survives. Raises InvalidProxy on anything else, naming the
-    line: an unparsed entry used to reach Firefox as `socks5://<whole line>`,
-    which it reported as NS_ERROR_UNKNOWN_PROXY_HOST — an error that reads like
-    the proxy is down when the line simply was not understood.
+    contains a colon or an '@' survives. Raises InvalidProxy on anything else,
+    naming the line: an unparsed entry used to reach Firefox as
+    `socks5://<whole line>`, which it reported as NS_ERROR_UNKNOWN_PROXY_HOST —
+    an error that reads like the proxy is down when the line simply was not
+    understood.
     """
     text = entry.strip()
     if not text or text.upper() == "DIRECT":
@@ -172,9 +173,12 @@ def parse_proxy(entry):
         if scheme not in PROXY_SCHEMES:
             raise InvalidProxy(f"{entry}: unsupported scheme '{scheme}://'")
     username = password = None
-    if "@" in text:
-        # rpartition, so an '@' inside the password does not split the host off
-        credentials, _, text = text.rpartition("@")
+    # URL form only when host:port follows the last '@'; otherwise the '@' is
+    # part of a host:port:user:pass password. rpartition, so an '@' inside a
+    # URL-form password does not split the host off.
+    credentials, at, tail = text.rpartition("@")
+    if at and tail.count(":") == 1 and tail.rpartition(":")[2].isdigit():
+        text = tail
         username, separator, password = credentials.partition(":")
         if not separator:
             raise InvalidProxy(f"{entry}: credentials before '@' must be user:pass")
