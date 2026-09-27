@@ -155,7 +155,16 @@ them.
   `requests` (HTTP CONNECT, then SOCKS5) and caches the answer per host:port,
   because one residential endpoint commonly answers both and nothing in the
   line says which. Guessing wrong does not fail cleanly. `add_profiles`
-  rejects unparseable lines before writing any profile, naming each one.
+  rejects unusable lines before writing any profile, naming each one — via
+  `check_proxy`, which is `parse_proxy` plus every rule decidable without the
+  network. Syntax alone is not enough for a pre-flight check:
+  `socks5://host:port:user:pass` parses perfectly and still cannot launch, and
+  when only `resolve_proxy` knew that, the raise landed on the identity that
+  drew the line, mid-loop, with earlier profiles already written. The probe
+  stays in `resolve_proxy` because it needs a connection and can answer
+  differently between runs, so **both call sites must handle a raise from it**:
+  `_cmd_launch` resolves inside its per-identity `try`, since outside it one
+  bad line left every remaining identity unlaunched.
   **Credentials force an HTTP-family scheme.** Playwright throws
   `Browser does not support socks5 proxy authentication` (and the socks4
   equivalent) in `coreBundle.js` before the browser is asked, so an

@@ -27,8 +27,8 @@ from . import paths
 from .personas import (
     InvalidProxy,
     camou_config,
+    check_proxy,
     generate_persona,
-    parse_proxy,
     proxy_label,
     screen_ordinal,
 )
@@ -138,11 +138,16 @@ def effective_entries():
 
 
 def proxy_problems(entries=None):
-    """Complaints about every unusable proxies.conf line, empty when all parse."""
+    """Complaints about every unusable proxies.conf line, empty when all parse.
+
+    check_proxy rather than parse_proxy: syntax alone would pass a line whose
+    scheme and credentials contradict each other, and the raise would then land
+    mid-creation instead of here.
+    """
     problems = []
     for entry in proxy_entries() if entries is None else entries:
         try:
-            parse_proxy(entry)
+            check_proxy(entry)
         except InvalidProxy as exc:
             problems.append(str(exc))
     return problems

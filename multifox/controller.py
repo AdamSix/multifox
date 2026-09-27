@@ -455,11 +455,17 @@ class Controller:
                 "env": {**os.environ, **ident.env},
                 "firefox_user_prefs": core.identity_prefs(ident.env),
             }
-            proxy_config = personas.resolve_proxy(ident.proxy, log)
-            if proxy_config:
-                kwargs["proxy"] = proxy_config
             ctx = None
             try:
+                # Inside the try: resolve_proxy probes the endpoint and raises
+                # InvalidProxy when it answers only SOCKS5 and needs a login.
+                # Outside, that raise left the loop and every remaining
+                # identity went unlaunched because of one bad line. The probe
+                # is also per-process, so a set that created cleanly can still
+                # raise here on a later run.
+                proxy_config = personas.resolve_proxy(ident.proxy, log)
+                if proxy_config:
+                    kwargs["proxy"] = proxy_config
                 ctx = self._pw.firefox.launch_persistent_context(**kwargs)
                 self._attach_netlog(ident.id, ctx)
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()

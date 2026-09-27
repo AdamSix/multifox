@@ -247,13 +247,19 @@ def _detect_scheme(host, port, username, password, log=None):
     return found
 
 
-def resolve_proxy(entry, log=None):
-    """Playwright proxy dict for a proxies.conf entry, or None for DIRECT.
+def check_proxy(entry):
+    """parse_proxy, plus every rule that can be decided without the network.
 
-    Credentials force an HTTP-family scheme. Playwright rejects them outright
-    on a SOCKS proxy -- `Browser does not support socks5 proxy authentication`,
-    thrown before the browser is even asked -- so an authenticated entry that
-    ends up on socks5 cannot launch, whatever the endpoint supports.
+    Split out of resolve_proxy so a line can be rejected before any profile is
+    written. parse_proxy alone is not enough for that: it reads
+    `socks5://host:port:user:pass` quite happily, and only resolve_proxy knows
+    that scheme and those credentials cannot go together. Checking just the
+    syntax let such a line through creation and then raised on the identity
+    that drew it, mid-loop, with earlier profiles already on disk.
+
+    Deliberately does not probe. Whether an endpoint speaks SOCKS5 needs a
+    connection, and the answer can differ between runs, so resolve_proxy owns
+    that half and callers must still handle a raise from it.
     """
     parsed = parse_proxy(entry)
     if parsed is None:
@@ -265,6 +271,21 @@ def resolve_proxy(entry, log=None):
             f"Use http:// or https:// for a proxy with a username and password, "
             f"or drop the credentials."
         )
+    return parsed
+
+
+def resolve_proxy(entry, log=None):
+    """Playwright proxy dict for a proxies.conf entry, or None for DIRECT.
+
+    Credentials force an HTTP-family scheme. Playwright rejects them outright
+    on a SOCKS proxy -- `Browser does not support socks5 proxy authentication`,
+    thrown before the browser is even asked -- so an authenticated entry that
+    ends up on socks5 cannot launch, whatever the endpoint supports.
+    """
+    parsed = check_proxy(entry)
+    if parsed is None:
+        return None
+    scheme, host, port, username, password = parsed
     if scheme is None:
         fallback = AUTHENTICATED_FALLBACK_SCHEME if username else DEFAULT_PROXY_SCHEME
         scheme = _detect_scheme(host, port, username, password, log)
