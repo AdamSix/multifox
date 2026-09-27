@@ -234,7 +234,14 @@ Under `paths.NETLOGS` (`netlogs/` beside `profiles/`):
   of `_abck` (`hash~valid~…`, `0` validated, `-1` not). When an identity turns
   dead, one `{"event": "dead", "cookies": {...}}` line dumps the same cookies
   from the context's jar, since the final verdict may have arrived in a
-  skipped response.
+  skipped response. A response whose URL matches `NETLOG_BODY_URLS` (Queue-it's
+  `/spa-api/` and `/challengeapi/`) also carries `body`: the JSON parsed, or
+  the text clipped to `NETLOG_MAX_BODY`. That is where the queue position,
+  the estimated wait and the redirect target live; nothing in the headers
+  says whether an entry is merely waiting or has been deprioritised. Body
+  entries bypass `NETLOG_MAX_PER_KEY`, since every poll is a new position.
+  Reading a body blocks the handler until the response finishes, which is
+  why only small API answers are matched.
 
 These logs live outside `profiles/` on purpose, so Stop does not delete the
 evidence of why a session was blocked.

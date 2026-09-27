@@ -146,6 +146,13 @@ block page can be traced back to the request that produced it:
 jq -c 'select(.status != null and .status >= 400)' netlogs/k7m2.jsonl
 ```
 
+Queue-it waiting-room API responses are logged with their JSON `body`, so the
+queue position and estimated wait of every identity can be followed over time:
+
+```sh
+jq -c 'select(.body) | {t, url, body}' netlogs/k7m2.jsonl
+```
+
 These logs survive **Stop** (which deletes every profile). Expect roughly
 100–500KB per identity per hour of browsing. Repeated requests to the same URL
 are logged 20 times and then suppressed, and each log stops at 16MB, so a page

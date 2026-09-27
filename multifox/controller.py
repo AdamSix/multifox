@@ -81,6 +81,17 @@ BOT_COOKIES = frozenset({
 # The verdict sits in the first 100 characters of _abck; the rest is sensor blob.
 NETLOG_MAX_COOKIE = 100
 
+# Responses whose body is logged too. Queue-it's waiting-room API answers with
+# the queue position, the estimated wait and the redirect target, which the
+# headers never carry; without the body a slow queue and a deprioritised entry
+# look the same. Matched on path only: self-hosted integrations serve it under
+# the site's own host rather than queue-it.net. challengeapi is the softblock
+# captcha's challenge/verify exchange.
+NETLOG_BODY_URLS = re.compile(r"/spa-api/|/challengeapi/", re.IGNORECASE)
+
+# Body bytes kept per logged response. A Queue-it status answer is under 1KB.
+NETLOG_MAX_BODY = 4096
+
 
 def _clip(value, limit):
     return value if len(value) <= limit else value[:limit] + f"…(+{len(value) - limit}B)"
@@ -104,6 +115,17 @@ def _bot_cookies(cookie_header):
         if sep and name in BOT_COOKIES:
             found[name] = _clip(value, NETLOG_MAX_COOKIE)
     return found
+
+
+def _body(response):
+    """The response body, parsed as JSON when it is, clipped otherwise."""
+    text = response.text()
+    if len(text) <= NETLOG_MAX_BODY:
+        try:
+            return json.loads(text)
+        except ValueError:
+            pass
+    return _clip(text, NETLOG_MAX_BODY)
 
 
 def _set_cookies(response):
@@ -289,7 +311,15 @@ class Controller:
                 pass
 
         def record(entry):
-            """Emit entry unless this (status, url) has already been logged enough."""
+            """Emit entry unless this (status, url) has already been logged enough.
+
+            Entries with a body are exempt: a queue poll returns a new position
+            every time, so the repeats are the point, and the URL allowlist
+            already bounds them.
+            """
+            if "body" in entry:
+                emit(entry)
+                return
             key = (entry.get("status"), entry.get("url"))
             count = seen.get(key, 0) + 1
             seen[key] = count
@@ -326,6 +356,12 @@ class Controller:
                     entry["request_headers"] = _clip_headers(request.headers)
                 if "set-cookie" in headers:
                     entry["set_cookie"] = _set_cookies(response)
+                if NETLOG_BODY_URLS.search(response.url):
+                    # A redirect has no body; keep the entry without one.
+                    try:
+                        entry["body"] = _body(response)
+                    except Exception:
+                        pass
                 # Only when the values change: the same map on every request
                 # of a page load buries the one where the verdict flipped.
                 cookies = _bot_cookies(request.headers.get("cookie", ""))
