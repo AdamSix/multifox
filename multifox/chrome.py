@@ -48,6 +48,30 @@ MIN_WINDOW = (1280, 800)
 # Share of identities whose window fills the work area, as a maximised one does.
 MAXIMISED_SHARE = 0.4
 
+# Playwright's --disable-features list, less the features whose absence a site
+# can observe: ThirdPartyStoragePartitioning (on in real Chrome since 115),
+# HttpsUpgrades (real Chrome upgrades http:// links) and PaintHolding. Chrome
+# keeps the last --disable-features it is given, and user args come after
+# Playwright's, so this replaces the default list. Compare it with
+# chromiumSwitches.ts after a patchright upgrade: a feature Playwright adds
+# there is dropped here until it is copied over.
+DISABLED_FEATURES = (
+    "AvoidUnnecessaryBeforeUnloadCheckSync",
+    "DestroyProfileOnBrowserClose",
+    "DialMediaRouteProvider",
+    "GlobalMediaControls",
+    "LensOverlay",
+    "MediaRouter",
+    "BlockOriginHeaderModificationOnRedirect",
+    "Translate",
+    "AutoDeElevate",
+    "OptimizationHints",
+)
+
+# Playwright defaults a page can read. srgb hides a P3 display: on a MacBook,
+# (color-gamut: p3) matched without it and did not match with it.
+IGNORED_DEFAULT_ARGS = ["--force-color-profile=srgb"]
+
 PROXIED_PREFS = {
     # Without this a page can read the real IP through WebRTC, past the proxy.
     "webrtc.ip_handling_policy": "disable_non_proxied_udp",
@@ -78,16 +102,33 @@ def problem():
     return None
 
 
+def _work_area():
+    """(left, top, width, height) of the host display's work area."""
+    display = personas.host_display() or (1440, 900)
+    left, top, reserved = personas.WORK_AREA[personas.HOST_OS]
+    return left, top, display[0] - left, display[1] - reserved
+
+
 def _window_size():
     """A window that fits the host work area: maximised, or a random smaller size."""
-    display = personas.host_display() or (1440, 900)
-    _, top, reserved = personas.WORK_AREA[personas.HOST_OS]
-    width, height = display[0], display[1] - reserved
+    _, _, width, height = _work_area()
     if random.random() < MAXIMISED_SHARE:
         return [width, height]
     return [
         random.randint(min(MIN_WINDOW[0], width), width),
         random.randint(min(MIN_WINDOW[1], height), height),
+    ]
+
+
+def _window_position(size):
+    """A random top-left corner that keeps a window of `size` inside the work area.
+
+    Without one every Chrome identity opened at the same screenX/screenY.
+    """
+    left, top, width, height = _work_area()
+    return [
+        random.randint(left, left + max(0, width - size[0])),
+        random.randint(top, top + max(0, height - size[1])),
     ]
 
 
@@ -113,7 +154,8 @@ def generate_persona(ident, proxy):
     one as for Camoufox (see personas.region_locale).
     """
     lines = []
-    persona = {"window": _window_size()}
+    window = _window_size()
+    persona = {"window": window, "position": _window_position(window)}
     size = "x".join(map(str, persona["window"]))
     proxy_config = personas.resolve_proxy(proxy, lines.append)
     if proxy_config is None:
@@ -199,14 +241,18 @@ def launch_options(profile_dir, persona):
     one of them misses still agrees with the page. TZ is left out on Windows,
     whose C runtime reads a different format.
     """
-    width, height = persona.get("window") or _window_size()
+    size = persona.get("window") or _window_size()
+    x, y = persona.get("position") or _window_position(size)
     args = [
         "--no-first-run",
         "--no-default-browser-check",
-        # Patchright drops Playwright's default flags. Without this one a
-        # window behind other windows stops painting, and its screenshot hangs.
-        "--disable-backgrounding-occluded-windows",
-        f"--window-size={width},{height}",
+        # Hides the bar Chrome shows for Patchright's
+        # --disable-blink-features=AutomationControlled. That flag must stay:
+        # without it navigator.webdriver is true. The bar took 56px from the page.
+        "--test-type",
+        f"--window-size={size[0]},{size[1]}",
+        f"--window-position={x},{y}",
+        f"--disable-features={','.join(DISABLED_FEATURES)}",
     ]
     env = dict(os.environ)
     kwargs = {
@@ -216,7 +262,11 @@ def launch_options(profile_dir, persona):
         # Patchright's advice, and the same reason as for Camoufox: an emulated
         # viewport would contradict the real window.
         "no_viewport": True,
+        # Playwright adds --no-sandbox otherwise, and Chrome then shows an
+        # info bar that also takes height from the page.
+        "chromium_sandbox": True,
         "args": args,
+        "ignore_default_args": IGNORED_DEFAULT_ARGS,
         "env": env,
     }
     locale = persona.get("locale")

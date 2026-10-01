@@ -88,9 +88,24 @@ them.
   it. Playwright's `locale` option is not used: it sends a one-value
   Accept-Language that real Chrome never sends. Prefs are merged into
   `Default/Preferences` before every launch, since Chrome rewrites that file.
-  Patchright drops Playwright's default flags, so `chrome.launch_options`
-  adds `--disable-backgrounding-occluded-windows` itself; without it a
-  window behind other windows stops painting and its screenshot hangs.
+  Chrome shows an "unsupported command-line flag" bar for some flags, and the
+  bar takes height from the page (measured: 56px of `innerHeight`), so it is
+  a fingerprint problem, not only a cosmetic one. Two launch options prevent
+  it. `chromium_sandbox=True` stops Playwright from adding `--no-sandbox`,
+  which also turns off Chrome's security sandbox. `--test-type` hides the bar
+  for Patchright's `--disable-blink-features=AutomationControlled`, which
+  must stay: without it `navigator.webdriver` is true.
+  Patchright keeps Playwright's default flags, and two of them are readable
+  by a page. `--force-color-profile=srgb` is dropped through
+  `ignore_default_args`: on a MacBook it made `(color-gamut: p3)` false.
+  Playwright's `--disable-features` list is replaced by `DISABLED_FEATURES`,
+  which leaves out ThirdPartyStoragePartitioning, HttpsUpgrades and
+  PaintHolding. Chrome keeps the last `--disable-features` it gets and user
+  args come after Playwright's, so the replacement works without matching
+  Playwright's exact string (measured: `http://example.com` is upgraded to
+  https again). Compare the list with Playwright's `chromiumSwitches.ts` after
+  a patchright upgrade. Each identity also gets a random window position,
+  since every Chrome window otherwise opened at the same `screenX/screenY`.
 - **`/api/state` must never wait on the driver thread.** A launch holds that
   thread for minutes, and a poll queued behind it froze the progress bar at
   `1/N` until the whole job finished. `controlled_idents()` and `health()`
@@ -304,7 +319,7 @@ Under `paths.HOME` (`~/Library/Application Support/multifox` on macOS,
   as a word), drawn at random and never reused.
 - `profiles/<id>/profile.json` — `{id, proxy, created, browser, env}` for
   Camoufox, `{id, proxy, created, browser, persona}` for Chrome. `env` is the
-  CAMOU_* persona; `persona` holds `window` and, for a proxied identity,
+  CAMOU_* persona; `persona` holds `window` and `position` and, for a proxied identity,
   `timezone`, `locale`, `languages` and `geolocation`. A missing `browser`
   means Camoufox, which every profile was before Chrome existed. This is the
   identity format; a change here invalidates
@@ -433,7 +448,8 @@ means the raise failed.
 ## Working in this repo
 
 - Python 3.10+. Stdlib only at runtime plus `camoufox[geoip]` (which brings
-  Playwright and BrowserForge) and `pywebview`. There is no requirements file:
+  Playwright and BrowserForge), `patchright` (the Chrome backend) and
+  `pywebview`. There is no requirements file:
   `install.py` is the dependency list. Keep the runtime dependency set this
   small.
 - No test suite and no linter config. Verify by running the dashboard from a
